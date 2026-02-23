@@ -347,7 +347,7 @@ app.post(
       return res.status(400).json({ message: "Faltan datos" });
     }
 
-    // 🔵 CASO 4 = OTRO (Fechas manuales)
+    // 🔵 CASO 4 = OTRO (manual)
     if (membresia_id == 4) {
 
       if (!fecha_inicio_manual || !fecha_fin_manual) {
@@ -359,17 +359,14 @@ app.post(
         VALUES (?, ?, ?, ?)
       `;
 
-      db.query(
+      return db.query(
         sqlManual,
         [usuario_id, membresia_id, fecha_inicio_manual, fecha_fin_manual],
         (err) => {
           if (err) return res.status(500).json(err);
-
           return res.json({ message: "Membresía personalizada creada correctamente" });
         }
       );
-
-      return;
     }
 
     // 🔵 Obtener última inscripción
@@ -384,79 +381,47 @@ app.post(
     db.query(sqlUltima, [usuario_id], (err, result) => {
       if (err) return res.status(500).json(err);
 
-      let sqlInsert;
+      let fechaBase = new Date();
 
       if (result.length > 0) {
+        const ultimaFecha = new Date(result[0].fecha_fin);
+        const hoy = new Date();
 
-        const fecha_fin_actual = result[0].fecha_fin;
-
-        sqlInsert = `
-          INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-          VALUES (
-            ?,
-            ?,
-            IF(? >= CURDATE(), ?, CURDATE()),
-            CASE
-              WHEN ? = 1 THEN DATE_ADD(IF(? >= CURDATE(), ?, CURDATE()), INTERVAL 1 DAY)
-              WHEN ? = 2 THEN DATE_ADD(IF(? >= CURDATE(), ?, CURDATE()), INTERVAL 7 DAY)
-              WHEN ? = 3 THEN DATE_ADD(IF(? >= CURDATE(), ?, CURDATE()), INTERVAL 1 MONTH)
-            END
-          )
-        `;
-
-        db.query(
-          sqlInsert,
-          [
-            usuario_id,
-            membresia_id,
-            fecha_fin_actual,
-            fecha_fin_actual,
-            membresia_id,
-            fecha_fin_actual,
-            fecha_fin_actual,
-            membresia_id,
-            fecha_fin_actual,
-            fecha_fin_actual
-          ],
-          (err2) => {
-            if (err2) return res.status(500).json(err2);
-
-            res.json({ message: "Membresía renovada correctamente" });
-          }
-        );
-
-      } else {
-
-        sqlInsert = `
-          INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-          VALUES (
-            ?,
-            ?,
-            CURDATE(),
-            CASE
-              WHEN ? = 1 THEN DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-              WHEN ? = 2 THEN DATE_ADD(CURDATE(), INTERVAL 7 DAY)
-              WHEN ? = 3 THEN DATE_ADD(CURDATE(), INTERVAL 1 MONTH)
-            END
-          )
-        `;
-
-        db.query(
-          sqlInsert,
-          [
-            usuario_id,
-            membresia_id,
-            membresia_id,
-            membresia_id,
-            membresia_id
-          ],
-          (err3) => {
-            if (err3) return res.status(500).json(err3);
-
-            res.json({ message: "Membresía creada correctamente" });
-          }
-        );
+        fechaBase = ultimaFecha >= hoy ? ultimaFecha : hoy;
       }
+
+      // 🔥 Calcular nueva fecha_fin en JS
+      let nuevaFechaFin = new Date(fechaBase);
+
+      if (membresia_id == 1) {
+        nuevaFechaFin.setDate(nuevaFechaFin.getDate() + 1);
+      }
+
+      if (membresia_id == 2) {
+        nuevaFechaFin.setDate(nuevaFechaFin.getDate() + 7);
+      }
+
+      if (membresia_id == 3) {
+        nuevaFechaFin.setMonth(nuevaFechaFin.getMonth() + 1);
+      }
+
+      const fechaInicioSQL = fechaBase.toISOString().split("T")[0];
+      const fechaFinSQL = nuevaFechaFin.toISOString().split("T")[0];
+
+      const sqlInsert = `
+        INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
+        VALUES (?, ?, ?, ?)
+      `;
+
+      db.query(
+        sqlInsert,
+        [usuario_id, membresia_id, fechaInicioSQL, fechaFinSQL],
+        (err2) => {
+          if (err2) return res.status(500).json(err2);
+
+          res.json({ message: "Membresía renovada correctamente" });
+        }
+      );
     });
   }
 );
