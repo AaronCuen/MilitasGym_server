@@ -14,6 +14,66 @@ app.use(cors());
 app.use(express.json());
 
 /* ==========================
+   EDITAR USUARIO (PROTEGIDO)
+========================== */
+app.put(
+  "/usuarios/:id",
+  verifyToken,
+  requireRole(['admin', 'recepcionista']),
+  (req, res) => {
+
+    const { id } = req.params;
+
+    const {
+      nombre,
+      apellido,
+      telefono,
+      email,
+      fecha_nacimiento,
+      genero
+    } = req.body;
+
+    if (!nombre || !apellido || !telefono) {
+      return res.status(400).json({
+        message: "Nombre, apellido y teléfono son obligatorios"
+      });
+    }
+
+    const sql = `
+      UPDATE usuarios
+      SET 
+        nombre = ?,
+        apellido = ?,
+        telefono = ?,
+        email = ?,
+        fecha_nacimiento = ?,
+        genero = ?
+      WHERE id = ?
+    `;
+
+    db.query(
+      sql,
+      [
+        nombre,
+        apellido,
+        telefono,
+        email || null,
+        fecha_nacimiento || null,
+        genero || null,
+        id
+      ],
+      (err, result) => {
+        if (err) return res.status(500).json(err);
+
+        res.json({
+          message: "Usuario actualizado correctamente"
+        });
+      }
+    );
+  }
+);
+
+/* ==========================
    FILTRO USUARIOS + MEMBRESÍA
 ========================== */
 
