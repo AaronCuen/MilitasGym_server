@@ -11,6 +11,7 @@ const db = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0
 });
+db.query("SET time_zone = 'America/Hermosillo'");
 
 // Opcional: verificar que el pool puede conectarse
 db.getConnection((err, connection) => {
