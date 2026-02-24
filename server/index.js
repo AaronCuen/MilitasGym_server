@@ -202,14 +202,15 @@ app.post(
   (req, res) => {
 
     const {
-      nombre,
-      apellido,
-      telefono,
-      email,
-      membresia_id,
-      foto,
-      fecha_inicio,
-      fecha_fin
+  nombre,
+  apellido,
+  telefono,
+  email,
+  membresia_id,
+  foto,
+  fecha_nacimiento,
+  fecha_inicio,
+  fecha_fin
     } = req.body;
 
     // 🔹 Validación básica
@@ -226,9 +227,15 @@ app.post(
       }
     }
 
+    if (fecha_nacimiento && isNaN(new Date(fecha_nacimiento))) {
+  return res.status(400).json({
+    message: "Formato de fecha de nacimiento inválido"
+  });
+}
+
     const sqlUser = `
-      INSERT INTO usuarios (nombre, apellido, telefono, email, foto)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO usuarios (nombre, apellido, telefono, email, fecha_nacimiento, foto)
+      VALUES (?, ?, ?, ?, ?, ?)
     `;
 
     db.query(
@@ -238,6 +245,7 @@ app.post(
         apellido,
         telefono,
         email || null,
+        fecha_nacimiento || null,
         foto || null
       ],
       (err, result) => {
