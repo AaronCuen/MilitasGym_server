@@ -419,7 +419,7 @@ app.post(
         (err2) => {
           if (err2) return res.status(500).json(err2);
 
-          res.json({ message: "Membresía renovada correctamente" });
+          return res.json({ message: "Membresía renovada correctamente" });
         }
       );
     });
