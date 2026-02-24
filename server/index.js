@@ -336,121 +336,121 @@ app.post(
       RENOVAR MEMBRESÏA
    ============================ */
     app.post(
-  "/inscripciones/renovar",
-  verifyToken,
-  requireRole(['admin', 'recepcionista']),
-  (req, res) => {
+    "/inscripciones/renovar",
+    verifyToken,
+    requireRole(['admin', 'recepcionista']),
+    (req, res) => {
 
-    const { usuario_id, membresia_id, fecha_inicio_manual, fecha_fin_manual } = req.body;
+      const { usuario_id, membresia_id, fecha_inicio_manual, fecha_fin_manual } = req.body;
 
-    if (!usuario_id || !membresia_id) {
-      return res.status(400).json({ message: "Faltan datos" });
-    }
-
-    /* =========================
-       🔵 CASO MANUAL (ID 4)
-    ========================= */
-
-    if (Number(membresia_id) === 4) {
-
-      if (!fecha_inicio_manual || !fecha_fin_manual) {
-        return res.status(400).json({ message: "Debes seleccionar fechas manuales" });
+      if (!usuario_id || !membresia_id) {
+        return res.status(400).json({ message: "Faltan datos" });
       }
 
-      const sqlManual = `
-        INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-        VALUES (?, ?, ?, ?)
+      /* =========================
+        🔵 CASO MANUAL (ID 4)
+      ========================= */
+
+      if (Number(membresia_id) === 4) {
+
+        if (!fecha_inicio_manual || !fecha_fin_manual) {
+          return res.status(400).json({ message: "Debes seleccionar fechas manuales" });
+        }
+
+        const sqlManual = `
+          INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
+          VALUES (?, ?, ?, ?)
+        `;
+
+        return db.query(
+          sqlManual,
+          [usuario_id, membresia_id, fecha_inicio_manual, fecha_fin_manual],
+          (err) => {
+            if (err) {
+              console.error("ERROR INSERT MANUAL:", err);
+              return res.status(500).json({ message: "Error en inserción manual" });
+            }
+
+            return res.status(200).json({
+              message: "Membresía personalizada creada correctamente"
+            });
+          }
+        );
+      }
+
+      /* =========================
+        🔵 CASO AUTOMÁTICO
+      ========================= */
+
+      const sqlUltima = `
+        SELECT fecha_fin
+        FROM inscripciones
+        WHERE usuario_id = ?
+        ORDER BY fecha_fin DESC
+        LIMIT 1
       `;
 
-      return db.query(
-        sqlManual,
-        [usuario_id, membresia_id, fecha_inicio_manual, fecha_fin_manual],
-        (err) => {
-          if (err) {
-            console.error("ERROR INSERT MANUAL:", err);
-            return res.status(500).json({ message: "Error en inserción manual" });
-          }
+      return db.query(sqlUltima, [usuario_id], (err, result) => {
 
-          return res.status(200).json({
-            message: "Membresía personalizada creada correctamente"
-          });
+        if (err) {
+          console.error("ERROR CONSULTA ULTIMA:", err);
+          return res.status(500).json({ message: "Error consultando última inscripción" });
         }
-      );
+
+        let fechaBase = new Date();
+        const hoy = new Date();
+        hoy.setHours(0, 0, 0, 0);
+
+        if (result.length > 0) {
+          const ultimaFecha = new Date(result[0].fecha_fin);
+          ultimaFecha.setHours(0, 0, 0, 0);
+
+          fechaBase = ultimaFecha >= hoy ? ultimaFecha : hoy;
+        } else {
+          fechaBase = hoy;
+        }
+
+        let nuevaFechaFin = new Date(fechaBase);
+
+        if (Number(membresia_id) === 1) {
+          nuevaFechaFin.setDate(nuevaFechaFin.getDate() + 1);
+        }
+
+        if (Number(membresia_id) === 2) {
+          nuevaFechaFin.setDate(nuevaFechaFin.getDate() + 7);
+        }
+
+        if (Number(membresia_id) === 3) {
+          nuevaFechaFin.setMonth(nuevaFechaFin.getMonth() + 1);
+        }
+
+        // Asegurar formato YYYY-MM-DD sin problemas de timezone
+        const fechaInicioSQL = fechaBase.toISOString().slice(0, 10);
+        const fechaFinSQL = nuevaFechaFin.toISOString().slice(0, 10);
+
+        const sqlInsert = `
+          INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
+          VALUES (?, ?, ?, ?)
+        `;
+
+        return db.query(
+          sqlInsert,
+          [usuario_id, membresia_id, fechaInicioSQL, fechaFinSQL],
+          (err2) => {
+
+            if (err2) {
+              console.error("ERROR INSERT AUTO:", err2);
+              return res.status(500).json({ message: "Error en inserción automática" });
+            }
+
+            return res.status(200).json({
+              message: "Membresía renovada correctamente"
+            });
+          }
+        );
+      });
     }
-
-    /* =========================
-       🔵 CASO AUTOMÁTICO
-    ========================= */
-
-    const sqlUltima = `
-      SELECT fecha_fin
-      FROM inscripciones
-      WHERE usuario_id = ?
-      ORDER BY fecha_fin DESC
-      LIMIT 1
-    `;
-
-    return db.query(sqlUltima, [usuario_id], (err, result) => {
-
-      if (err) {
-        console.error("ERROR CONSULTA ULTIMA:", err);
-        return res.status(500).json({ message: "Error consultando última inscripción" });
-      }
-
-      let fechaBase = new Date();
-      const hoy = new Date();
-      hoy.setHours(0, 0, 0, 0);
-
-      if (result.length > 0) {
-        const ultimaFecha = new Date(result[0].fecha_fin);
-        ultimaFecha.setHours(0, 0, 0, 0);
-
-        fechaBase = ultimaFecha >= hoy ? ultimaFecha : hoy;
-      } else {
-        fechaBase = hoy;
-      }
-
-      let nuevaFechaFin = new Date(fechaBase);
-
-      if (Number(membresia_id) === 1) {
-        nuevaFechaFin.setDate(nuevaFechaFin.getDate() + 1);
-      }
-
-      if (Number(membresia_id) === 2) {
-        nuevaFechaFin.setDate(nuevaFechaFin.getDate() + 7);
-      }
-
-      if (Number(membresia_id) === 3) {
-        nuevaFechaFin.setMonth(nuevaFechaFin.getMonth() + 1);
-      }
-
-      // Asegurar formato YYYY-MM-DD sin problemas de timezone
-      const fechaInicioSQL = fechaBase.toISOString().slice(0, 10);
-      const fechaFinSQL = nuevaFechaFin.toISOString().slice(0, 10);
-
-      const sqlInsert = `
-        INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-        VALUES (?, ?, ?, ?)
-      `;
-
-      return db.query(
-        sqlInsert,
-        [usuario_id, membresia_id, fechaInicioSQL, fechaFinSQL],
-        (err2) => {
-
-          if (err2) {
-            console.error("ERROR INSERT AUTO:", err2);
-            return res.status(500).json({ message: "Error en inserción automática" });
-          }
-
-          return res.status(200).json({
-            message: "Membresía renovada correctamente"
-          });
-        }
-      );
-    });
-  }
-);
+  );
       
 // PROTEGIDO
 /* ==========================
