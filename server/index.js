@@ -7,12 +7,6 @@ const db = require("./db");
 const verifyToken = require("./middlewares/auth");
 const requireAdmin = require('./middlewares/requireAdmin');
 const requireRole = require('./middlewares/requireRole');
-function formatearFechaLocal(fecha) {
-  const year = fecha.getFullYear();
-  const month = String(fecha.getMonth() + 1).padStart(2, "0");
-  const day = String(fecha.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
 
 const app = express();
 
@@ -384,8 +378,9 @@ app.post(
           message: "La fecha fin debe ser mayor a la fecha inicio"
         });
       }
-      const fechaInicioSQL = formatearFechaLocal(fechaInicio);
-      const fechaFinSQL = formatearFechaLocal(fechaFin);
+
+      const fechaInicioSQL = fechaInicio.toISOString().slice(0, 10);
+      const fechaFinSQL = fechaFin.toISOString().slice(0, 10);
 
       const sqlManual = `
         INSERT INTO inscripciones 
@@ -459,8 +454,8 @@ app.post(
       if (idMembresia === 3)
         nuevaFechaFin.setMonth(nuevaFechaFin.getMonth() + 1);
 
-        const fechaInicioSQL = formatearFechaLocal(fechaBase);
-        const fechaFinSQL = formatearFechaLocal(nuevaFechaFin);
+      const fechaInicioSQL = fechaBase.toISOString().slice(0, 10);
+      const fechaFinSQL = nuevaFechaFin.toISOString().slice(0, 10);
 
       const sqlInsert = `
         INSERT INTO inscripciones
