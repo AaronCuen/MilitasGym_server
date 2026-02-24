@@ -41,7 +41,7 @@ app.put(
       });
     }
 
-    const sql = `
+   const sql = `
       UPDATE usuarios
       SET 
         nombre = ?,
@@ -49,7 +49,8 @@ app.put(
         telefono = ?,
         email = ?,
         fecha_nacimiento = ?,
-        genero = ?
+        genero = ?,
+        foto = ?
       WHERE id = ?
     `;
 
