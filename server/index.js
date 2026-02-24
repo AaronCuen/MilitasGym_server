@@ -30,7 +30,9 @@ app.put(
       telefono,
       email,
       fecha_nacimiento,
-      genero
+      genero,
+      foto,
+      
     } = req.body;
 
     if (!nombre || !apellido || !telefono) {
@@ -60,6 +62,7 @@ app.put(
         email || null,
         fecha_nacimiento || null,
         genero || null,
+        foto || null,
         id
       ],
       (err, result) => {
