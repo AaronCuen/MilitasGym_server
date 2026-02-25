@@ -695,7 +695,7 @@ app.post(
 
     if (results.length === 0) {
       return res.status(400).json({
-        message: "El usuario no tiene membresÃ­a registrada âŒ"
+        message: "El usuario no tiene membresia registrada"
       });
     }
 
@@ -707,7 +707,7 @@ app.post(
 
     if (hoy > fechaFin) {
       return res.status(400).json({
-        message: "MembresÃ­a vencida âŒ"
+        message: "Membresia vencida"
       });
     }
 
@@ -720,7 +720,7 @@ app.post(
       if (err2) return res.status(500).json(err2);
 
       res.json({
-        message: "Asistencia registrada correctamente âœ”ï¸"
+        message: "Asistencia registrada correctamente"
       });
     });
   });
