@@ -209,9 +209,9 @@ app.put(
       });
     }
 
-    if (new Date(fecha_fin) <= new Date(fecha_inicio)) {
+    if (new Date(fecha_fin) < new Date(fecha_inicio)) {
       return res.status(400).json({
-        message: "La fecha_fin debe ser mayor que fecha_inicio",
+        message: "La fecha_fin debe ser mayor o igual que fecha_inicio",
       });
     }
 
