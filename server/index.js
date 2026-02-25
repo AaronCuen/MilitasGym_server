@@ -1,8 +1,9 @@
-require("dotenv").config();
+﻿require("dotenv").config();
 const jwt = require("jsonwebtoken");
 const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
+const cloudinary = require("cloudinary").v2;
 const db = require("./db");
 const verifyToken = require("./middlewares/auth");
 const requireAdmin = require('./middlewares/requireAdmin');
@@ -13,15 +14,103 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "dqrdrnznk",
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+  secure: true,
+});
+
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || "dqrdrnznk";
+const dbPromise = db.promise();
+let cleanupInProgress = false;
+
+const extractPublicIdFromUrl = (url) => {
+  if (!url || typeof url !== "string") return null;
+  if (!url.includes("res.cloudinary.com")) return null;
+
+  // Matches everything after /upload/ and strips version + extension.
+  const match = url.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[a-zA-Z0-9]+)?$/);
+  if (!match || !match[1]) return null;
+  return decodeURIComponent(match[1]);
+};
+
+const deleteCloudinaryByUrl = async (url) => {
+  const publicId = extractPublicIdFromUrl(url);
+  if (!publicId) return;
+
+  if (!process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+    console.warn("Cloudinary credentials are missing in .env. Skipping image delete.");
+    return;
+  }
+
+  try {
+    await cloudinary.uploader.destroy(publicId, { resource_type: "image" });
+  } catch (error) {
+    console.error("Cloudinary delete error:", error.message);
+  }
+};
+
+const cleanupInactiveUsers = async () => {
+  const [rows] = await dbPromise.query(
+    `
+      SELECT
+        u.id,
+        u.foto,
+        MAX(i.fecha_fin) AS ultima_fecha_fin
+      FROM usuarios u
+      LEFT JOIN inscripciones i ON i.usuario_id = u.id
+      GROUP BY u.id, u.foto, u.fecha_registro
+      HAVING
+        (
+          MAX(i.fecha_fin) IS NOT NULL
+          AND MAX(i.fecha_fin) < DATE_SUB(CURDATE(), INTERVAL 2 MONTH)
+        )
+        OR
+        (
+          MAX(i.fecha_fin) IS NULL
+          AND u.fecha_registro < DATE_SUB(CURDATE(), INTERVAL 2 MONTH)
+        )
+    `
+  );
+
+  if (!rows.length) return 0;
+
+  for (const user of rows) {
+    if (user.foto && user.foto.includes(`res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}`)) {
+      await deleteCloudinaryByUrl(user.foto);
+    }
+
+    // asistencia and inscripciones are deleted by FK cascade.
+    await dbPromise.query("DELETE FROM usuarios WHERE id = ?", [user.id]);
+  }
+
+  return rows.length;
+};
+
+const runInactiveCleanup = async () => {
+  if (cleanupInProgress) return;
+  cleanupInProgress = true;
+  try {
+    const removed = await cleanupInactiveUsers();
+    if (removed > 0) {
+      console.log(`Cleanup: ${removed} usuarios inactivos eliminados`);
+    }
+  } catch (error) {
+    console.error("Cleanup inactive users error:", error.message);
+  } finally {
+    cleanupInProgress = false;
+  }
+};
+
 /* ==========================
    EDITAR USUARIO (PROTEGIDO)
 ========================== */
 app.put(
   "/usuarios/:id",
   verifyToken,
-  requireRole(['admin', 'recepcionista']),
+  requireRole(["admin", "recepcionista"]),
   (req, res) => {
-
     const { id } = req.params;
 
     const {
@@ -32,53 +121,71 @@ app.put(
       fecha_nacimiento,
       genero,
       foto,
-      
     } = req.body;
 
     if (!nombre || !apellido || !telefono) {
       return res.status(400).json({
-        message: "Nombre, apellido y teléfono son obligatorios"
+        message: "Nombre, apellido y telefono son obligatorios",
       });
     }
 
-   const sql = `
-      UPDATE usuarios
-      SET 
-        nombre = ?,
-        apellido = ?,
-        telefono = ?,
-        email = ?,
-        fecha_nacimiento = ?,
-        genero = ?,
-        foto = ?
-      WHERE id = ?
-    `;
-
-    db.query(
-      sql,
-      [
-        nombre,
-        apellido,
-        telefono,
-        email || null,
-        fecha_nacimiento || null,
-        genero || null,
-        foto || null,
-        id
-      ],
-      (err, result) => {
-        if (err) return res.status(500).json(err);
-
-        res.json({
-          message: "Usuario actualizado correctamente"
-        });
+    const sqlOldPhoto = "SELECT foto FROM usuarios WHERE id = ?";
+    db.query(sqlOldPhoto, [id], (oldErr, oldResults) => {
+      if (oldErr) return res.status(500).json(oldErr);
+      if (!oldResults.length) {
+        return res.status(404).json({ message: "Usuario no encontrado" });
       }
-    );
+
+      const oldPhoto = oldResults[0].foto || null;
+      const nuevaFoto = typeof foto === "undefined" ? oldPhoto : (foto || null);
+
+      const sql = `
+        UPDATE usuarios
+        SET
+          nombre = ?,
+          apellido = ?,
+          telefono = ?,
+          email = ?,
+          fecha_nacimiento = ?,
+          genero = ?,
+          foto = ?
+        WHERE id = ?
+      `;
+
+      db.query(
+        sql,
+        [
+          nombre,
+          apellido,
+          telefono,
+          email || null,
+          fecha_nacimiento || null,
+          genero || null,
+          nuevaFoto,
+          id,
+        ],
+        async (err) => {
+          if (err) return res.status(500).json(err);
+
+          if (
+            oldPhoto &&
+            oldPhoto !== nuevaFoto &&
+            oldPhoto.includes(`res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}`)
+          ) {
+            await deleteCloudinaryByUrl(oldPhoto);
+          }
+
+          res.json({
+            message: "Usuario actualizado correctamente",
+          });
+        }
+      );
+    });
   }
 );
 
 /* ==========================
-   FILTRO USUARIOS + MEMBRESÍA
+   FILTRO USUARIOS + MEMBRESÃA
 ========================== */
 
 // PROTEGIDO 
@@ -114,31 +221,31 @@ app.get(
 
     const params = [];
 
-    // 🔎 Filtro por ID
+    // ðŸ”Ž Filtro por ID
     if (id && id.trim() !== "") {
       sql += " AND u.id = ?";
       params.push(id);
     }
 
-    // 🔎 Filtro por nombre
+    // ðŸ”Ž Filtro por nombre
     if (nombre && nombre.trim() !== "") {
       sql += " AND (u.nombre LIKE ? OR u.apellido LIKE ?)";
       params.push(`%${nombre}%`, `%${nombre}%`);
     }
 
-    // 📅 Día exacto de REGISTRO
+    // ðŸ“… DÃ­a exacto de REGISTRO
     if (fecha_inicio && fecha_inicio.trim() !== "") {
       sql += " AND DATE(u.fecha_registro) = ?";
       params.push(fecha_inicio);
     }
 
-    // 📅 Día exacto de VENCIMIENTO
+    // ðŸ“… DÃ­a exacto de VENCIMIENTO
     if (fecha_fin && fecha_fin.trim() !== "") {
       sql += " AND DATE(i.fecha_fin) = ?";
       params.push(fecha_fin);
     }
 
-    // 🟢🔴 Filtro por estado
+    // ðŸŸ¢ðŸ”´ Filtro por estado
     if (estado && estado !== "todos") {
       sql += `
         AND (
@@ -228,9 +335,9 @@ app.post("/login", (req, res) => {
     const ok = await bcrypt.compare(password, recep.password);
 
     if (!ok)
-      return res.status(401).json({ message: "Contraseña incorrecta" });
+      return res.status(401).json({ message: "ContraseÃ±a incorrecta" });
 
-    // 🔐 AQUÍ se crea el token
+    // ðŸ” AQUÃ se crea el token
     const token = jwt.sign(
       {
         id: recep.id,
@@ -241,7 +348,7 @@ app.post("/login", (req, res) => {
       { expiresIn: "8h" }
     );
 
-    // Se envía el token + datos básicos
+    // Se envÃ­a el token + datos bÃ¡sicos
     res.json({
       token,
       user: {
@@ -255,7 +362,7 @@ app.post("/login", (req, res) => {
 
 
 /* ==========================
-   REGISTRAR USUARIO + INSCRIPCIÓN
+   REGISTRAR USUARIO + INSCRIPCIÃ“N
 ========================== */
 
 // PROTEGIDO 
@@ -277,12 +384,12 @@ app.post(
   fecha_fin
     } = req.body;
 
-    // 🔹 Validación básica
+    // ðŸ”¹ ValidaciÃ³n bÃ¡sica
     if (!nombre || !apellido || !telefono || !membresia_id) {
       return res.status(400).json({ message: "Faltan datos obligatorios" });
     }
 
-    // 🔹 Validación de fechas si se envían manualmente
+    // ðŸ”¹ ValidaciÃ³n de fechas si se envÃ­an manualmente
     if (fecha_inicio && fecha_fin) {
       if (new Date(fecha_fin) <= new Date(fecha_inicio)) {
         return res.status(400).json({
@@ -293,7 +400,7 @@ app.post(
 
     if (fecha_nacimiento && isNaN(new Date(fecha_nacimiento))) {
   return res.status(400).json({
-    message: "Formato de fecha de nacimiento inválido"
+    message: "Formato de fecha de nacimiento invÃ¡lido"
   });
 }
 
@@ -320,7 +427,7 @@ app.post(
         let sqlIns;
         let params;
 
-        // 🔹 MODO MANUAL
+        // ðŸ”¹ MODO MANUAL
         if (fecha_inicio && fecha_fin) {
 
           sqlIns = `
@@ -338,7 +445,7 @@ app.post(
 
         } else {
 
-          // 🔹 MODO AUTOMÁTICO (Día, Semana, Mes)
+          // ðŸ”¹ MODO AUTOMÃTICO (DÃ­a, Semana, Mes)
           sqlIns = `
             INSERT INTO inscripciones
             (usuario_id, membresia_id, fecha_inicio, fecha_fin)
@@ -368,7 +475,7 @@ app.post(
           if (err2) return res.status(500).json(err2);
 
           res.json({
-            message: "Usuario e inscripción creada correctamente",
+            message: "Usuario e inscripciÃ³n creada correctamente",
             usuario_id,
             membresia_id,
             modo: (fecha_inicio && fecha_fin) ? "manual" : "automatico"
@@ -400,15 +507,15 @@ app.post(
 
   db.query(sql, [usuario_id, membresia_id, fecha_inicio, fecha_fin], err => {
     if (err) return res.status(500).json(err);
-    res.json({ message: "Inscripción creada" });
+    res.json({ message: "InscripciÃ³n creada" });
   });
 });
 
 /* ===========================
-      RENOVAR MEMBRESÍA
+      RENOVAR MEMBRESÃA
 =========================== */
 /* ===========================
-      RENOVAR MEMBRESÍA
+      RENOVAR MEMBRESÃA
 =========================== */
 app.post(
   "/inscripciones/renovar",
@@ -432,7 +539,7 @@ app.post(
     const idMembresia = Number(membresia_id);
 
     /* =========================
-       🔵 CASO MANUAL
+       ðŸ”µ CASO MANUAL
     ========================= */
     if (idMembresia === 4) {
 
@@ -468,22 +575,22 @@ app.post(
           if (err) {
             console.error("ERROR INSERT MANUAL:", err);
             return res.status(500).json({
-              message: "Error en inserción manual",
+              message: "Error en inserciÃ³n manual",
               error: err.message
             });
           }
 
           return res.status(200).json({
-            message: "Membresía personalizada creada correctamente"
+            message: "MembresÃ­a personalizada creada correctamente"
           });
         }
       );
 
-      return; // 🔴 IMPORTANTE
+      return; // ðŸ”´ IMPORTANTE
     }
 
     /* =========================
-       🔵 CASO AUTOMÁTICO
+       ðŸ”µ CASO AUTOMÃTICO
     ========================= */
 
     const sqlUltima = `
@@ -499,7 +606,7 @@ app.post(
       if (err) {
         console.error("ERROR CONSULTA ULTIMA:", err);
         return res.status(500).json({
-          message: "Error consultando última inscripción",
+          message: "Error consultando Ãºltima inscripciÃ³n",
           error: err.message
         });
       }
@@ -543,13 +650,13 @@ app.post(
           if (err2) {
             console.error("ERROR INSERT AUTO:", err2);
             return res.status(500).json({
-              message: "Error en inserción automática",
+              message: "Error en inserciÃ³n automÃ¡tica",
               error: err2.message
             });
           }
 
           return res.status(200).json({
-            message: "Membresía renovada correctamente"
+            message: "MembresÃ­a renovada correctamente"
           });
         }
       );
@@ -580,7 +687,7 @@ app.post(
 
     if (results.length === 0) {
       return res.status(400).json({
-        message: "El usuario no tiene membresía registrada ❌"
+        message: "El usuario no tiene membresÃ­a registrada âŒ"
       });
     }
 
@@ -592,7 +699,7 @@ app.post(
 
     if (hoy > fechaFin) {
       return res.status(400).json({
-        message: "Membresía vencida ❌"
+        message: "MembresÃ­a vencida âŒ"
       });
     }
 
@@ -605,7 +712,7 @@ app.post(
       if (err2) return res.status(500).json(err2);
 
       res.json({
-        message: "Asistencia registrada correctamente ✔️"
+        message: "Asistencia registrada correctamente âœ”ï¸"
       });
     });
   });
@@ -613,7 +720,7 @@ app.post(
 
 
 /* ==========================
-   CONSULTAR ESTADO DE MEMBRESÍA
+   CONSULTAR ESTADO DE MEMBRESÃA
 ========================== */
 //PROTEGIDO
 app.get(
@@ -634,7 +741,7 @@ app.get(
   db.query(sql, [usuario_id], (err, result) => {
     if (err) return res.status(500).json(err);
     if (result.length === 0)
-      return res.status(404).json({ message: "Sin membresía" });
+      return res.status(404).json({ message: "Sin membresÃ­a" });
 
     res.json(result[0]);
   });
@@ -688,7 +795,7 @@ app.get(
 });
 
 /* ==========================
-   USUARIOS + ESTADO MEMBRESÍA
+   USUARIOS + ESTADO MEMBRESÃA
 ========================== */
 //PROTEGIDO
 app.get(
@@ -789,28 +896,38 @@ app.delete(
   "/usuarios/:id",
   verifyToken,
   requireRole(["admin"]),
-  (req, res) => {
-  const { id } = req.params;
+  async (req, res) => {
+    const { id } = req.params;
 
-  // Primero borramos asistencias
-  const sqlAsist = "DELETE FROM asistencia WHERE usuario_id = ?";
-  const sqlIns = "DELETE FROM inscripciones WHERE usuario_id = ?";
-  const sqlUser = "DELETE FROM usuarios WHERE id = ?";
+    try {
+      const [users] = await dbPromise.query(
+        "SELECT foto FROM usuarios WHERE id = ?",
+        [id]
+      );
 
-  db.query(sqlAsist, [id], (err) => {
-    if (err) return res.status(500).json(err);
+      if (!users.length) {
+        return res.status(404).json({ message: "Usuario no encontrado" });
+      }
 
-    db.query(sqlIns, [id], (err2) => {
-      if (err2) return res.status(500).json(err2);
+      const foto = users[0].foto;
+      if (
+        foto &&
+        foto.includes(`res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}`)
+      ) {
+        await deleteCloudinaryByUrl(foto);
+      }
 
-      db.query(sqlUser, [id], (err3) => {
-        if (err3) return res.status(500).json(err3);
+      // asistencia + inscripciones se borran por ON DELETE CASCADE.
+      await dbPromise.query("DELETE FROM usuarios WHERE id = ?", [id]);
 
-        res.json({ message: "Usuario eliminado correctamente" });
-      });
-    });
-  });
-});
+      return res.json({ message: "Usuario eliminado correctamente" });
+    } catch (error) {
+      return res
+        .status(500)
+        .json({ message: "Error al eliminar usuario", error: error.message });
+    }
+  }
+);
 
 
 /* ==========================
@@ -828,4 +945,9 @@ const PORT = process.env.PORT || 4000;
 
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en puerto ${PORT}`);
+  runInactiveCleanup();
+  // Repeat cleanup every 12 hours.
+  setInterval(runInactiveCleanup, 12 * 60 * 60 * 1000);
 });
+
+
