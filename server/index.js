@@ -193,6 +193,79 @@ app.put(
 );
 
 /* ==========================
+   EDITAR INSCRIPCION DESDE MODAL
+========================== */
+app.put(
+  "/usuarios/:id/inscripcion",
+  verifyToken,
+  requireRole(["admin", "recepcionista"]),
+  async (req, res) => {
+    const { id } = req.params;
+    const { fecha_inicio, fecha_fin, membresia_id } = req.body;
+
+    if (!fecha_inicio || !fecha_fin) {
+      return res.status(400).json({
+        message: "fecha_inicio y fecha_fin son obligatorias",
+      });
+    }
+
+    if (new Date(fecha_fin) <= new Date(fecha_inicio)) {
+      return res.status(400).json({
+        message: "La fecha_fin debe ser mayor que fecha_inicio",
+      });
+    }
+
+    let conn;
+    try {
+      conn = await dbPromise.getConnection();
+      await conn.beginTransaction();
+
+      const [usuarios] = await conn.query("SELECT id FROM usuarios WHERE id = ?", [id]);
+      if (!usuarios.length) {
+        await conn.rollback();
+        return res.status(404).json({ message: "Usuario no encontrado" });
+      }
+
+      let membresiaFinal = Number(membresia_id);
+      if (!Number.isFinite(membresiaFinal) || membresiaFinal <= 0) {
+        const [ultima] = await conn.query(
+          `
+            SELECT membresia_id
+            FROM inscripciones
+            WHERE usuario_id = ?
+            ORDER BY fecha_fin DESC
+            LIMIT 1
+          `,
+          [id]
+        );
+        membresiaFinal = ultima.length ? Number(ultima[0].membresia_id) : 4;
+      }
+
+      await conn.query("DELETE FROM inscripciones WHERE usuario_id = ?", [id]);
+
+      await conn.query(
+        `
+          INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
+          VALUES (?, ?, ?, ?)
+        `,
+        [id, membresiaFinal, fecha_inicio, fecha_fin]
+      );
+
+      await conn.commit();
+      return res.json({ message: "Inscripcion actualizada correctamente" });
+    } catch (error) {
+      if (conn) await conn.rollback();
+      return res.status(500).json({
+        message: "Error al actualizar inscripcion",
+        error: error.message,
+      });
+    } finally {
+      if (conn) conn.release();
+    }
+  }
+);
+
+/* ==========================
    FILTRO USUARIOS + MEMBRESIA
 ========================== */
 
