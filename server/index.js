@@ -193,7 +193,7 @@ app.put(
 );
 
 /* ==========================
-   FILTRO USUARIOS + MEMBRESÃA
+   FILTRO USUARIOS + MEMBRESIA
 ========================== */
 
 // PROTEGIDO 
@@ -229,31 +229,31 @@ app.get(
 
     const params = [];
 
-    // ðŸ”Ž Filtro por ID
+    // Filtro por ID
     if (id && id.trim() !== "") {
       sql += " AND u.id = ?";
       params.push(id);
     }
 
-    // ðŸ”Ž Filtro por nombre
+    // Filtro por nombre
     if (nombre && nombre.trim() !== "") {
       sql += " AND (u.nombre LIKE ? OR u.apellido LIKE ?)";
       params.push(`%${nombre}%`, `%${nombre}%`);
     }
 
-    // ðŸ“… DÃ­a exacto de REGISTRO
+    // Dia exacto de REGISTRO
     if (fecha_inicio && fecha_inicio.trim() !== "") {
       sql += " AND DATE(u.fecha_registro) = ?";
       params.push(fecha_inicio);
     }
 
-    // ðŸ“… DÃ­a exacto de VENCIMIENTO
+    // Dia exacto de VENCIMIENTO
     if (fecha_fin && fecha_fin.trim() !== "") {
       sql += " AND DATE(i.fecha_fin) = ?";
       params.push(fecha_fin);
     }
 
-    // ðŸŸ¢ðŸ”´ Filtro por estado
+    // Filtro por estado
     if (estado && estado !== "todos") {
       sql += `
         AND (
@@ -343,9 +343,9 @@ app.post("/login", (req, res) => {
     const ok = await bcrypt.compare(password, recep.password);
 
     if (!ok)
-      return res.status(401).json({ message: "ContraseÃ±a incorrecta" });
+      return res.status(401).json({ message: "Contrasena incorrecta" });
 
-    // ðŸ” AQUÃ se crea el token
+    // Aqui se crea el token
     const token = jwt.sign(
       {
         id: recep.id,
@@ -356,7 +356,7 @@ app.post("/login", (req, res) => {
       { expiresIn: "8h" }
     );
 
-    // Se envÃ­a el token + datos bÃ¡sicos
+    // Se envia el token + datos basicos
     res.json({
       token,
       user: {
@@ -370,7 +370,7 @@ app.post("/login", (req, res) => {
 
 
 /* ==========================
-   REGISTRAR USUARIO + INSCRIPCIÃ“N
+   REGISTRAR USUARIO + INSCRIPCION
 ========================== */
 
 // PROTEGIDO 
@@ -392,12 +392,12 @@ app.post(
   fecha_fin
     } = req.body;
 
-    // ðŸ”¹ ValidaciÃ³n bÃ¡sica
+    // Validacion basica
     if (!nombre || !apellido || !telefono || !membresia_id) {
       return res.status(400).json({ message: "Faltan datos obligatorios" });
     }
 
-    // ðŸ”¹ ValidaciÃ³n de fechas si se envÃ­an manualmente
+    // Validacion de fechas si se envian manualmente
     if (fecha_inicio && fecha_fin) {
       if (new Date(fecha_fin) <= new Date(fecha_inicio)) {
         return res.status(400).json({
@@ -408,7 +408,7 @@ app.post(
 
     if (fecha_nacimiento && isNaN(new Date(fecha_nacimiento))) {
   return res.status(400).json({
-    message: "Formato de fecha de nacimiento invÃ¡lido"
+    message: "Formato de fecha de nacimiento invalido"
   });
 }
 
@@ -435,7 +435,7 @@ app.post(
         let sqlIns;
         let params;
 
-        // ðŸ”¹ MODO MANUAL
+        // MODO MANUAL
         if (fecha_inicio && fecha_fin) {
 
           sqlIns = `
@@ -453,7 +453,7 @@ app.post(
 
         } else {
 
-          // ðŸ”¹ MODO AUTOMÃTICO (DÃ­a, Semana, Mes)
+          // MODO AUTOMATICO (Dia, Semana, Mes)
           sqlIns = `
             INSERT INTO inscripciones
             (usuario_id, membresia_id, fecha_inicio, fecha_fin)
@@ -483,7 +483,7 @@ app.post(
           if (err2) return res.status(500).json(err2);
 
           res.json({
-            message: "Usuario e inscripciÃ³n creada correctamente",
+            message: "Usuario e inscripcion creada correctamente",
             usuario_id,
             membresia_id,
             modo: (fecha_inicio && fecha_fin) ? "manual" : "automatico"
@@ -515,15 +515,15 @@ app.post(
 
   db.query(sql, [usuario_id, membresia_id, fecha_inicio, fecha_fin], err => {
     if (err) return res.status(500).json(err);
-    res.json({ message: "InscripciÃ³n creada" });
+    res.json({ message: "Inscripcion creada" });
   });
 });
 
 /* ===========================
-      RENOVAR MEMBRESÃA
+      RENOVAR MEMBRESIA
 =========================== */
 /* ===========================
-      RENOVAR MEMBRESÃA
+      RENOVAR MEMBRESIA
 =========================== */
 app.post(
   "/inscripciones/renovar",
@@ -547,7 +547,7 @@ app.post(
     const idMembresia = Number(membresia_id);
 
     /* =========================
-       ðŸ”µ CASO MANUAL
+       CASO MANUAL
     ========================= */
     if (idMembresia === 4) {
 
@@ -583,22 +583,22 @@ app.post(
           if (err) {
             console.error("ERROR INSERT MANUAL:", err);
             return res.status(500).json({
-              message: "Error en inserciÃ³n manual",
+              message: "Error en insercion manual",
               error: err.message
             });
           }
 
           return res.status(200).json({
-            message: "MembresÃ­a personalizada creada correctamente"
+            message: "Membresia personalizada creada correctamente"
           });
         }
       );
 
-      return; // ðŸ”´ IMPORTANTE
+      return; // IMPORTANTE
     }
 
     /* =========================
-       ðŸ”µ CASO AUTOMÃTICO
+       CASO AUTOMATICO
     ========================= */
 
     const sqlUltima = `
@@ -614,7 +614,7 @@ app.post(
       if (err) {
         console.error("ERROR CONSULTA ULTIMA:", err);
         return res.status(500).json({
-          message: "Error consultando Ãºltima inscripciÃ³n",
+          message: "Error consultando ultima inscripcion",
           error: err.message
         });
       }
@@ -658,13 +658,13 @@ app.post(
           if (err2) {
             console.error("ERROR INSERT AUTO:", err2);
             return res.status(500).json({
-              message: "Error en inserciÃ³n automÃ¡tica",
+              message: "Error en insercion automatica",
               error: err2.message
             });
           }
 
           return res.status(200).json({
-            message: "MembresÃ­a renovada correctamente"
+            message: "Membresia renovada correctamente"
           });
         }
       );
@@ -728,7 +728,7 @@ app.post(
 
 
 /* ==========================
-   CONSULTAR ESTADO DE MEMBRESÃA
+   CONSULTAR ESTADO DE MEMBRESIA
 ========================== */
 //PROTEGIDO
 app.get(
@@ -749,7 +749,7 @@ app.get(
   db.query(sql, [usuario_id], (err, result) => {
     if (err) return res.status(500).json(err);
     if (result.length === 0)
-      return res.status(404).json({ message: "Sin membresÃ­a" });
+      return res.status(404).json({ message: "Sin membresia" });
 
     res.json(result[0]);
   });
@@ -803,7 +803,7 @@ app.get(
 });
 
 /* ==========================
-   USUARIOS + ESTADO MEMBRESÃA
+   USUARIOS + ESTADO MEMBRESIA
 ========================== */
 //PROTEGIDO
 app.get(
