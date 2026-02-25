@@ -28,9 +28,10 @@ let cleanupInProgress = false;
 const extractPublicIdFromUrl = (url) => {
   if (!url || typeof url !== "string") return null;
   if (!url.includes("res.cloudinary.com")) return null;
+  const cleanUrl = url.split("?")[0].split("#")[0];
 
   // Matches everything after /upload/ and strips version + extension.
-  const match = url.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[a-zA-Z0-9]+)?$/);
+  const match = cleanUrl.match(/\/upload\/(?:v\d+\/)?(.+?)(?:\.[a-zA-Z0-9]+)?$/);
   if (!match || !match[1]) return null;
   return decodeURIComponent(match[1]);
 };
@@ -45,7 +46,10 @@ const deleteCloudinaryByUrl = async (url) => {
   }
 
   try {
-    await cloudinary.uploader.destroy(publicId, { resource_type: "image" });
+    const result = await cloudinary.uploader.destroy(publicId, { resource_type: "image" });
+    if (result?.result !== "ok" && result?.result !== "not found") {
+      console.warn("Cloudinary destroy unexpected result:", result);
+    }
   } catch (error) {
     console.error("Cloudinary delete error:", error.message);
   }
@@ -77,7 +81,7 @@ const cleanupInactiveUsers = async () => {
   if (!rows.length) return 0;
 
   for (const user of rows) {
-    if (user.foto && user.foto.includes(`res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}`)) {
+    if (user.foto) {
       await deleteCloudinaryByUrl(user.foto);
     }
 
@@ -167,10 +171,14 @@ app.put(
         async (err) => {
           if (err) return res.status(500).json(err);
 
+          const oldPublicId = extractPublicIdFromUrl(oldPhoto);
+          const newPublicId = extractPublicIdFromUrl(nuevaFoto);
+
+          // Only delete previous image when it is actually a different Cloudinary asset.
           if (
             oldPhoto &&
-            oldPhoto !== nuevaFoto &&
-            oldPhoto.includes(`res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}`)
+            oldPublicId &&
+            (!newPublicId || oldPublicId !== newPublicId)
           ) {
             await deleteCloudinaryByUrl(oldPhoto);
           }
@@ -910,10 +918,7 @@ app.delete(
       }
 
       const foto = users[0].foto;
-      if (
-        foto &&
-        foto.includes(`res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}`)
-      ) {
+      if (foto) {
         await deleteCloudinaryByUrl(foto);
       }
 
