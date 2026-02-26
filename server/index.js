@@ -1,4 +1,5 @@
 ﻿require("dotenv").config();
+process.env.TZ = process.env.TZ || "America/Hermosillo";
 const jwt = require("jsonwebtoken");
 const express = require("express");
 const cors = require("cors");
