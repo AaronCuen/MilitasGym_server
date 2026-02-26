@@ -127,9 +127,26 @@ app.put(
       foto,
     } = req.body;
 
-    if (!nombre || !apellido || !telefono) {
+    const nombreLimpio = (nombre || "").trim();
+    const apellidoLimpio = (apellido || "").trim();
+    const telefonoLimpio = (telefono || "").replace(/\D/g, "").slice(0, 10);
+    const emailLimpio = (email || "").trim();
+
+    if (!nombreLimpio || !apellidoLimpio) {
       return res.status(400).json({
-        message: "Nombre, apellido y telefono son obligatorios",
+        message: "Nombre y apellido son obligatorios",
+      });
+    }
+
+    if (telefonoLimpio && !/^\d{10}$/.test(telefonoLimpio)) {
+      return res.status(400).json({
+        message: "Si agregas telefono, debe tener exactamente 10 digitos numericos",
+      });
+    }
+
+    if (emailLimpio && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailLimpio)) {
+      return res.status(400).json({
+        message: "El correo no tiene un formato valido",
       });
     }
 
@@ -159,10 +176,10 @@ app.put(
       db.query(
         sql,
         [
-          nombre,
-          apellido,
-          telefono,
-          email || null,
+          nombreLimpio,
+          apellidoLimpio,
+          telefonoLimpio || "",
+          emailLimpio || null,
           fecha_nacimiento || null,
           genero || null,
           nuevaFoto,
