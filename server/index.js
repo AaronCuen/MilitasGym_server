@@ -454,36 +454,72 @@ app.post(
   (req, res) => {
 
     const {
-  nombre,
-  apellido,
-  telefono,
-  email,
-  membresia_id,
-  foto,
-  fecha_nacimiento,
-  fecha_inicio,
-  fecha_fin
+      nombre,
+      apellido,
+      telefono,
+      email,
+      membresia_id,
+      foto,
+      fecha_nacimiento,
+      fecha_inicio,
+      fecha_fin
     } = req.body;
 
+    const nombreLimpio = (nombre || "").trim();
+    const apellidoLimpio = (apellido || "").trim();
+    const telefonoLimpio = (telefono || "").replace(/\D/g, "").slice(0, 10);
+    const emailLimpio = (email || "").trim();
+    const membresiaId = Number(membresia_id);
+
+    let fechaInicioManual = fecha_inicio || "";
+    const fechaFinManual = fecha_fin || "";
+    const esManual = membresiaId === 4;
+
     // Validacion basica
-    if (!nombre || !apellido || !telefono || !membresia_id) {
+    if (!nombreLimpio || !apellidoLimpio || !membresiaId) {
       return res.status(400).json({ message: "Faltan datos obligatorios" });
     }
 
-    // Validacion de fechas si se envian manualmente
-    if (fecha_inicio && fecha_fin) {
-      if (new Date(fecha_fin) <= new Date(fecha_inicio)) {
+    if (telefonoLimpio && !/^\d{10}$/.test(telefonoLimpio)) {
+      return res.status(400).json({
+        message: "Si agregas telefono, debe tener exactamente 10 digitos numericos"
+      });
+    }
+
+    if (emailLimpio && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailLimpio)) {
+      return res.status(400).json({
+        message: "El correo no tiene un formato valido"
+      });
+    }
+
+    if (esManual && !fechaInicioManual) {
+      const hoy = new Date();
+      const yyyy = hoy.getFullYear();
+      const mm = String(hoy.getMonth() + 1).padStart(2, "0");
+      const dd = String(hoy.getDate()).padStart(2, "0");
+      fechaInicioManual = `${yyyy}-${mm}-${dd}`;
+    }
+
+    if (esManual && !fechaFinManual) {
+      return res.status(400).json({
+        message: "Debes seleccionar la fecha de vencimiento"
+      });
+    }
+
+    // Validacion de fechas manuales (igual permitido)
+    if (esManual && fechaInicioManual && fechaFinManual) {
+      if (new Date(fechaFinManual) < new Date(fechaInicioManual)) {
         return res.status(400).json({
-          message: "La fecha de vencimiento debe ser mayor a la fecha de inicio"
+          message: "La fecha de vencimiento no puede ser menor a la fecha de inicio"
         });
       }
     }
 
     if (fecha_nacimiento && isNaN(new Date(fecha_nacimiento))) {
-  return res.status(400).json({
-    message: "Formato de fecha de nacimiento invalido"
-  });
-}
+      return res.status(400).json({
+        message: "Formato de fecha de nacimiento invalido"
+      });
+    }
 
     const sqlUser = `
       INSERT INTO usuarios (nombre, apellido, telefono, email, fecha_nacimiento, foto)
@@ -493,10 +529,10 @@ app.post(
     db.query(
       sqlUser,
       [
-        nombre,
-        apellido,
-        telefono,
-        email || null,
+        nombreLimpio,
+        apellidoLimpio,
+        telefonoLimpio || "",
+        emailLimpio || null,
         fecha_nacimiento || null,
         foto || null
       ],
@@ -509,7 +545,7 @@ app.post(
         let params;
 
         // MODO MANUAL
-        if (fecha_inicio && fecha_fin) {
+        if (esManual) {
 
           sqlIns = `
             INSERT INTO inscripciones
@@ -519,9 +555,9 @@ app.post(
 
           params = [
             usuario_id,
-            membresia_id,
-            fecha_inicio,
-            fecha_fin
+            membresiaId,
+            fechaInicioManual,
+            fechaFinManual
           ];
 
         } else {
@@ -545,10 +581,10 @@ app.post(
 
           params = [
             usuario_id,
-            membresia_id,
-            membresia_id,
-            membresia_id,
-            membresia_id
+            membresiaId,
+            membresiaId,
+            membresiaId,
+            membresiaId
           ];
         }
 
@@ -558,8 +594,8 @@ app.post(
           res.json({
             message: "Usuario e inscripcion creada correctamente",
             usuario_id,
-            membresia_id,
-            modo: (fecha_inicio && fecha_fin) ? "manual" : "automatico"
+            membresia_id: membresiaId,
+            modo: esManual ? "manual" : "automatico"
           });
         });
 
