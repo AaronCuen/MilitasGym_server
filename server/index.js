@@ -488,9 +488,20 @@ app.post(
     const emailLimpio = (email || "").trim();
     const membresiaId = Number(membresia_id);
 
+    const esFechaISO = (valor) =>
+      typeof valor === "string" && /^\d{4}-\d{2}-\d{2}$/.test(valor);
+    const fechaLocalISO = () => {
+      const hoy = new Date();
+      const yyyy = hoy.getFullYear();
+      const mm = String(hoy.getMonth() + 1).padStart(2, "0");
+      const dd = String(hoy.getDate()).padStart(2, "0");
+      return `${yyyy}-${mm}-${dd}`;
+    };
+
     let fechaInicioManual = fecha_inicio || "";
     const fechaFinManual = fecha_fin || "";
     const esManual = membresiaId === 4;
+    const fechaInicioBase = esFechaISO(fecha_inicio) ? fecha_inicio : fechaLocalISO();
 
     // Validacion basica
     if (!nombreLimpio || !apellidoLimpio || !membresiaId) {
@@ -586,12 +597,12 @@ app.post(
             VALUES (
               ?, 
               ?, 
-              CURDATE(),
+              DATE(?),
               CASE
-                WHEN ? = 1 THEN DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-                WHEN ? = 2 THEN DATE_ADD(CURDATE(), INTERVAL 7 DAY)
-                WHEN ? = 3 THEN DATE_ADD(CURDATE(), INTERVAL 1 MONTH)
-                ELSE DATE_ADD(CURDATE(), INTERVAL 1 MONTH)
+                WHEN ? = 1 THEN DATE(?)
+                WHEN ? = 2 THEN DATE_ADD(DATE(?), INTERVAL 7 DAY)
+                WHEN ? = 3 THEN DATE_ADD(DATE(?), INTERVAL 1 MONTH)
+                ELSE DATE_ADD(DATE(?), INTERVAL 1 MONTH)
               END
             )
           `;
@@ -599,9 +610,14 @@ app.post(
           params = [
             usuario_id,
             membresiaId,
+            fechaInicioBase,
             membresiaId,
+            fechaInicioBase,
             membresiaId,
-            membresiaId
+            fechaInicioBase,
+            membresiaId,
+            fechaInicioBase,
+            fechaInicioBase
           ];
         }
 
@@ -758,8 +774,9 @@ app.post(
 
       let nuevaFechaFin = new Date(fechaBase);
 
-      if (idMembresia === 1)
-        nuevaFechaFin.setDate(nuevaFechaFin.getDate() + 1);
+      if (idMembresia === 1) {
+        nuevaFechaFin = new Date(fechaBase);
+      }
 
       if (idMembresia === 2)
         nuevaFechaFin.setDate(nuevaFechaFin.getDate() + 7);
