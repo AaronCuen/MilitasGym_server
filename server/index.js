@@ -421,41 +421,52 @@ app.post(
 // NO REQUIERE PROTECCION
 app.post("/login", (req, res) => {
   const { usuario, password } = req.body;
+  const usuarioLimpio = (usuario || "").trim();
+
+  if (!usuarioLimpio || typeof password !== "string" || !password) {
+    return res
+      .status(400)
+      .json({ message: "Usuario y contrasena son obligatorios" });
+  }
 
   const sql = "SELECT * FROM recepcionistas WHERE usuario = ?";
 
-  db.query(sql, [usuario], async (err, results) => {
+  db.query(sql, [usuarioLimpio], async (err, results) => {
     if (err) return res.status(500).json(err);
 
     if (results.length === 0)
       return res.status(401).json({ message: "Usuario no encontrado" });
 
-    const recep = results[0];
-    const ok = await bcrypt.compare(password, recep.password);
+    try {
+      const recep = results[0];
+      const ok = await bcrypt.compare(password, recep.password || "");
 
-    if (!ok)
-      return res.status(401).json({ message: "Contrasena incorrecta" });
+      if (!ok)
+        return res.status(401).json({ message: "Contrasena incorrecta" });
 
-    // Aqui se crea el token
-    const token = jwt.sign(
-      {
-        id: recep.id,
-        nombre: recep.nombre,
-        rol: recep.rol
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "8h" }
-    );
+      // Aqui se crea el token
+      const token = jwt.sign(
+        {
+          id: recep.id,
+          nombre: recep.nombre,
+          rol: recep.rol
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: "8h" }
+      );
 
-    // Se envia el token + datos basicos
-    res.json({
-      token,
-      user: {
-        id: recep.id,
-        nombre: recep.nombre,
-        rol: recep.rol
-      }
-    });
+      // Se envia el token + datos basicos
+      res.json({
+        token,
+        user: {
+          id: recep.id,
+          nombre: recep.nombre,
+          rol: recep.rol
+        }
+      });
+    } catch (error) {
+      return res.status(500).json({ message: "Error al validar credenciales" });
+    }
   });
 });
 
@@ -469,7 +480,7 @@ app.post(
   "/registrar_usuario",
   verifyToken,
   requireRole(['admin', 'recepcionista']),
-  (req, res) => {
+  async (req, res) => {
 
     const {
       nombre,
@@ -556,87 +567,103 @@ app.post(
       VALUES (?, ?, ?, ?, ?, ?, DATE(?))
     `;
 
-    db.query(
-      sqlUser,
-      [
-        nombreLimpio,
-        apellidoLimpio,
-        telefonoLimpio || "",
-        emailLimpio || null,
-        fecha_nacimiento || null,
-        foto || null,
-        fechaRegistroBase
-      ],
-      (err, result) => {
-        if (err) return res.status(500).json(err);
+    let conn;
+    try {
+      conn = await dbPromise.getConnection();
+      await conn.beginTransaction();
 
-        const usuario_id = result.insertId;
+      const [result] = await conn.query(
+        sqlUser,
+        [
+          nombreLimpio,
+          apellidoLimpio,
+          telefonoLimpio || "",
+          emailLimpio || null,
+          fecha_nacimiento || null,
+          foto || null,
+          fechaRegistroBase
+        ]
+      );
 
-        let sqlIns;
-        let params;
+      const usuario_id = result.insertId;
 
-        // MODO MANUAL
-        if (esManual) {
+      let sqlIns;
+      let params;
 
-          sqlIns = `
-            INSERT INTO inscripciones
-            (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-            VALUES (?, ?, ?, ?)
-          `;
+      // MODO MANUAL
+      if (esManual) {
 
-          params = [
-            usuario_id,
-            membresiaId,
-            fechaInicioManual,
-            fechaFinManual
-          ];
+        sqlIns = `
+          INSERT INTO inscripciones
+          (usuario_id, membresia_id, fecha_inicio, fecha_fin)
+          VALUES (?, ?, ?, ?)
+        `;
 
-        } else {
+        params = [
+          usuario_id,
+          membresiaId,
+          fechaInicioManual,
+          fechaFinManual
+        ];
 
-          // MODO AUTOMATICO (Dia, Semana, Mes)
-          sqlIns = `
-            INSERT INTO inscripciones
-            (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-            VALUES (
-              ?, 
-              ?, 
-              DATE(?),
-              CASE
-                WHEN ? = 1 THEN DATE(?)
-                WHEN ? = 2 THEN DATE_ADD(DATE(?), INTERVAL 7 DAY)
-                WHEN ? = 3 THEN DATE_ADD(DATE(?), INTERVAL 1 MONTH)
-                ELSE DATE_ADD(DATE(?), INTERVAL 1 MONTH)
-              END
-            )
-          `;
+      } else {
 
-          params = [
-            usuario_id,
-            membresiaId,
-            fechaInicioBase,
-            membresiaId,
-            fechaInicioBase,
-            membresiaId,
-            fechaInicioBase,
-            membresiaId,
-            fechaInicioBase,
-            fechaInicioBase
-          ];
-        }
+        // MODO AUTOMATICO (Dia, Semana, Mes)
+        sqlIns = `
+          INSERT INTO inscripciones
+          (usuario_id, membresia_id, fecha_inicio, fecha_fin)
+          VALUES (
+            ?, 
+            ?, 
+            DATE(?),
+            CASE
+              WHEN ? = 1 THEN DATE(?)
+              WHEN ? = 2 THEN DATE_ADD(DATE(?), INTERVAL 7 DAY)
+              WHEN ? = 3 THEN DATE_ADD(DATE(?), INTERVAL 1 MONTH)
+              ELSE DATE_ADD(DATE(?), INTERVAL 1 MONTH)
+            END
+          )
+        `;
 
-        db.query(sqlIns, params, (err2) => {
-          if (err2) return res.status(500).json(err2);
-
-          res.json({
-            message: "Usuario e inscripcion creada correctamente",
-            usuario_id,
-            membresia_id: membresiaId,
-            modo: esManual ? "manual" : "automatico"
-          });
-        });
-
+        params = [
+          usuario_id,
+          membresiaId,
+          fechaInicioBase,
+          membresiaId,
+          fechaInicioBase,
+          membresiaId,
+          fechaInicioBase,
+          membresiaId,
+          fechaInicioBase,
+          fechaInicioBase
+        ];
       }
-    );
+
+      await conn.query(sqlIns, params);
+      await conn.commit();
+
+      res.json({
+        message: "Usuario e inscripcion creada correctamente",
+        usuario_id,
+        membresia_id: membresiaId,
+        modo: esManual ? "manual" : "automatico"
+      });
+    } catch (err) {
+      if (conn) {
+        await conn.rollback();
+      }
+      if (err?.code) {
+        return res.status(500).json(err);
+      }
+      return res.status(500).json({
+        message: "Error al registrar usuario",
+        error: err.message
+      });
+    } finally {
+      if (conn) {
+        conn.release();
+      }
+    }
   }
 );
 
