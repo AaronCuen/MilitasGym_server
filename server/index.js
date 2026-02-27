@@ -108,6 +108,54 @@ const runInactiveCleanup = async () => {
   }
 };
 
+const isISODateString = (value) =>
+  typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
+
+const toISODateLocal = (date) => {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const parseISODateLocal = (isoDate) => {
+  if (!isISODateString(isoDate)) return null;
+  const [yyyy, mm, dd] = isoDate.split("-").map(Number);
+  const parsed = new Date(yyyy, mm - 1, dd);
+
+  if (
+    parsed.getFullYear() !== yyyy ||
+    parsed.getMonth() !== mm - 1 ||
+    parsed.getDate() !== dd
+  ) {
+    return null;
+  }
+
+  return parsed;
+};
+
+const resolveDashboardRange = (inicioRaw, finRaw) => {
+  const today = new Date();
+  const defaultInicio = toISODateLocal(new Date(today.getFullYear(), today.getMonth(), 1));
+  const defaultFin = toISODateLocal(new Date(today.getFullYear(), today.getMonth(), today.getDate()));
+
+  const inicio = isISODateString(inicioRaw) ? inicioRaw : defaultInicio;
+  const fin = isISODateString(finRaw) ? finRaw : defaultFin;
+
+  const inicioDate = parseISODateLocal(inicio);
+  const finDate = parseISODateLocal(fin);
+
+  if (!inicioDate || !finDate) {
+    return { ok: false, message: "inicio y fin deben tener formato YYYY-MM-DD" };
+  }
+
+  if (inicioDate > finDate) {
+    return { ok: false, message: "La fecha inicio no puede ser mayor que fecha fin" };
+  }
+
+  return { ok: true, inicio, fin };
+};
+
 /* ==========================
    EDITAR USUARIO (PROTEGIDO)
 ========================== */
@@ -927,6 +975,192 @@ app.get(
     res.json(result[0]);
   });
 });
+
+/* ==========================
+   DASHBOARD RESUMEN
+========================== */
+app.get(
+  "/dashboard/resumen",
+  verifyToken,
+  requireRole(["admin", "recepcionista"]),
+  async (req, res) => {
+    const { inicio: inicioRaw, fin: finRaw } = req.query;
+    const rango = resolveDashboardRange(inicioRaw, finRaw);
+
+    if (!rango.ok) {
+      return res.status(400).json({ message: rango.message });
+    }
+
+    const { inicio, fin } = rango;
+
+    try {
+      const [
+        [asistenciasHoyRows],
+        [asistenciasPeriodoRows],
+        [registrosRows],
+        [inscripcionesRows],
+        [vencimientosRows],
+        [asistenciasDetalleRows],
+        [vencimientosDetalleRows],
+        [serieAsistenciasRows],
+        [serieRegistrosRows],
+        [serieInscripcionesRows],
+        [serieVencimientosRows],
+      ] = await Promise.all([
+        dbPromise.query(
+          `
+            SELECT COUNT(*) AS total
+            FROM asistencia
+            WHERE DATE(fecha_asistencia) = CURDATE()
+          `
+        ),
+        dbPromise.query(
+          `
+            SELECT COUNT(*) AS total
+            FROM asistencia
+            WHERE DATE(fecha_asistencia) BETWEEN ? AND ?
+          `,
+          [inicio, fin]
+        ),
+        dbPromise.query(
+          `
+            SELECT COUNT(*) AS total
+            FROM usuarios
+            WHERE DATE(fecha_registro) BETWEEN ? AND ?
+          `,
+          [inicio, fin]
+        ),
+        dbPromise.query(
+          `
+            SELECT COUNT(*) AS total
+            FROM inscripciones
+            WHERE DATE(fecha_inicio) BETWEEN ? AND ?
+          `,
+          [inicio, fin]
+        ),
+        dbPromise.query(
+          `
+            SELECT COUNT(*) AS total
+            FROM inscripciones
+            WHERE DATE(fecha_fin) BETWEEN ? AND ?
+          `,
+          [inicio, fin]
+        ),
+        dbPromise.query(
+          `
+            SELECT
+              a.id AS asistencia_id,
+              u.id AS usuario_id,
+              u.nombre,
+              u.apellido,
+              DATE_FORMAT(a.fecha_asistencia, '%Y-%m-%d') AS fecha,
+              DATE_FORMAT(a.fecha_asistencia, '%H:%i:%s') AS hora
+            FROM asistencia a
+            INNER JOIN usuarios u ON u.id = a.usuario_id
+            WHERE DATE(a.fecha_asistencia) BETWEEN ? AND ?
+            ORDER BY a.fecha_asistencia DESC
+            LIMIT 300
+          `,
+          [inicio, fin]
+        ),
+        dbPromise.query(
+          `
+            SELECT
+              i.id AS inscripcion_id,
+              u.id AS usuario_id,
+              u.nombre,
+              u.apellido,
+              i.membresia_id,
+              COALESCE(m.nombre, 'Sin membresia') AS membresia_nombre,
+              DATE_FORMAT(i.fecha_inicio, '%Y-%m-%d') AS fecha_inicio,
+              DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin
+            FROM inscripciones i
+            INNER JOIN usuarios u ON u.id = i.usuario_id
+            LEFT JOIN membresias m ON m.id = i.membresia_id
+            WHERE DATE(i.fecha_fin) BETWEEN ? AND ?
+            ORDER BY i.fecha_fin ASC, u.id ASC
+            LIMIT 300
+          `,
+          [inicio, fin]
+        ),
+        dbPromise.query(
+          `
+            SELECT
+              DATE_FORMAT(DATE(fecha_asistencia), '%Y-%m-%d') AS fecha,
+              COUNT(*) AS total
+            FROM asistencia
+            WHERE DATE(fecha_asistencia) BETWEEN ? AND ?
+            GROUP BY DATE(fecha_asistencia)
+            ORDER BY DATE(fecha_asistencia) ASC
+          `,
+          [inicio, fin]
+        ),
+        dbPromise.query(
+          `
+            SELECT
+              DATE_FORMAT(DATE(fecha_registro), '%Y-%m-%d') AS fecha,
+              COUNT(*) AS total
+            FROM usuarios
+            WHERE DATE(fecha_registro) BETWEEN ? AND ?
+            GROUP BY DATE(fecha_registro)
+            ORDER BY DATE(fecha_registro) ASC
+          `,
+          [inicio, fin]
+        ),
+        dbPromise.query(
+          `
+            SELECT
+              DATE_FORMAT(DATE(fecha_inicio), '%Y-%m-%d') AS fecha,
+              COUNT(*) AS total
+            FROM inscripciones
+            WHERE DATE(fecha_inicio) BETWEEN ? AND ?
+            GROUP BY DATE(fecha_inicio)
+            ORDER BY DATE(fecha_inicio) ASC
+          `,
+          [inicio, fin]
+        ),
+        dbPromise.query(
+          `
+            SELECT
+              DATE_FORMAT(DATE(fecha_fin), '%Y-%m-%d') AS fecha,
+              COUNT(*) AS total
+            FROM inscripciones
+            WHERE DATE(fecha_fin) BETWEEN ? AND ?
+            GROUP BY DATE(fecha_fin)
+            ORDER BY DATE(fecha_fin) ASC
+          `,
+          [inicio, fin]
+        ),
+      ]);
+
+      return res.json({
+        rango: { inicio, fin },
+        tarjetas: {
+          asistencias_hoy: Number(asistenciasHoyRows[0]?.total || 0),
+          asistencias_periodo: Number(asistenciasPeriodoRows[0]?.total || 0),
+          registros_nuevos_periodo: Number(registrosRows[0]?.total || 0),
+          inscripciones_periodo: Number(inscripcionesRows[0]?.total || 0),
+          vencimientos_periodo: Number(vencimientosRows[0]?.total || 0),
+        },
+        series: {
+          asistencias_por_dia: serieAsistenciasRows || [],
+          registros_por_dia: serieRegistrosRows || [],
+          inscripciones_por_dia: serieInscripcionesRows || [],
+          vencimientos_por_dia: serieVencimientosRows || [],
+        },
+        detalle: {
+          asistencias: asistenciasDetalleRows || [],
+          vencimientos: vencimientosDetalleRows || [],
+        },
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: "Error al generar resumen de dashboard",
+        error: error.message,
+      });
+    }
+  }
+);
 
 
 /* ==========================
