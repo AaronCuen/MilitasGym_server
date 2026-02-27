@@ -562,7 +562,6 @@ app.post(
     const fechaFinManual = fecha_fin || "";
     const esManual = membresiaId === 4;
     const fechaInicioBase = esFechaISO(fecha_inicio) ? fecha_inicio : fechaLocalISO();
-    const fechaRegistroBase = fechaLocalISO();
 
     // Validacion basica
     if (!nombreLimpio || !apellidoLimpio || !membresiaId) {
@@ -612,7 +611,7 @@ app.post(
 
     const sqlUser = `
       INSERT INTO usuarios (nombre, apellido, telefono, email, fecha_nacimiento, foto, fecha_registro)
-      VALUES (?, ?, ?, ?, ?, ?, DATE(?))
+      VALUES (?, ?, ?, ?, ?, ?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '-07:00'))
     `;
 
     let conn;
@@ -628,8 +627,7 @@ app.post(
           telefonoLimpio || "",
           emailLimpio || null,
           fecha_nacimiento || null,
-          foto || null,
-          fechaRegistroBase
+          foto || null
         ]
       );
 
