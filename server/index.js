@@ -994,27 +994,42 @@ app.get(
     const { inicio, fin } = rango;
 
     try {
+      const warnings = [];
+
+      const safeQuery = async (name, sql, params = []) => {
+        try {
+          const [rows] = await dbPromise.query(sql, params);
+          return rows;
+        } catch (err) {
+          warnings.push({ query: name, error: err.message });
+          console.error(`[dashboard/resumen] ${name}:`, err.message);
+          return [];
+        }
+      };
+
       const [
-        [asistenciasHoyRows],
-        [asistenciasPeriodoRows],
-        [registrosRows],
-        [inscripcionesRows],
-        [vencimientosRows],
-        [asistenciasDetalleRows],
-        [vencimientosDetalleRows],
-        [serieAsistenciasRows],
-        [serieRegistrosRows],
-        [serieInscripcionesRows],
-        [serieVencimientosRows],
+        asistenciasHoyRows,
+        asistenciasPeriodoRows,
+        registrosRows,
+        inscripcionesRows,
+        vencimientosRows,
+        asistenciasDetalleRows,
+        vencimientosDetalleRows,
+        serieAsistenciasRows,
+        serieRegistrosRows,
+        serieInscripcionesRows,
+        serieVencimientosRows,
       ] = await Promise.all([
-        dbPromise.query(
+        safeQuery(
+          "asistencias_hoy",
           `
             SELECT COUNT(*) AS total
             FROM asistencia
             WHERE DATE(fecha_asistencia) = CURDATE()
           `
         ),
-        dbPromise.query(
+        safeQuery(
+          "asistencias_periodo",
           `
             SELECT COUNT(*) AS total
             FROM asistencia
@@ -1022,7 +1037,8 @@ app.get(
           `,
           [inicio, fin]
         ),
-        dbPromise.query(
+        safeQuery(
+          "registros_periodo",
           `
             SELECT COUNT(*) AS total
             FROM usuarios
@@ -1030,7 +1046,8 @@ app.get(
           `,
           [inicio, fin]
         ),
-        dbPromise.query(
+        safeQuery(
+          "inscripciones_periodo",
           `
             SELECT COUNT(*) AS total
             FROM inscripciones
@@ -1038,7 +1055,8 @@ app.get(
           `,
           [inicio, fin]
         ),
-        dbPromise.query(
+        safeQuery(
+          "vencimientos_periodo",
           `
             SELECT COUNT(*) AS total
             FROM inscripciones
@@ -1046,7 +1064,8 @@ app.get(
           `,
           [inicio, fin]
         ),
-        dbPromise.query(
+        safeQuery(
+          "detalle_asistencias",
           `
             SELECT
               a.id AS asistencia_id,
@@ -1063,7 +1082,8 @@ app.get(
           `,
           [inicio, fin]
         ),
-        dbPromise.query(
+        safeQuery(
+          "detalle_vencimientos",
           `
             SELECT
               i.id AS inscripcion_id,
@@ -1071,63 +1091,84 @@ app.get(
               u.nombre,
               u.apellido,
               i.membresia_id,
-              COALESCE(m.nombre, 'Sin membresia') AS membresia_nombre,
+              CASE
+                WHEN i.membresia_id = 1 THEN 'Dia'
+                WHEN i.membresia_id = 2 THEN 'Semanal'
+                WHEN i.membresia_id = 3 THEN 'Mensual'
+                WHEN i.membresia_id = 4 THEN 'Otro'
+                ELSE CONCAT('Membresia ', i.membresia_id)
+              END AS membresia_nombre,
               DATE_FORMAT(i.fecha_inicio, '%Y-%m-%d') AS fecha_inicio,
               DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin
             FROM inscripciones i
             INNER JOIN usuarios u ON u.id = i.usuario_id
-            LEFT JOIN membresias m ON m.id = i.membresia_id
             WHERE DATE(i.fecha_fin) BETWEEN ? AND ?
             ORDER BY i.fecha_fin ASC, u.id ASC
             LIMIT 300
           `,
           [inicio, fin]
         ),
-        dbPromise.query(
+        safeQuery(
+          "serie_asistencias",
           `
             SELECT
-              DATE_FORMAT(DATE(fecha_asistencia), '%Y-%m-%d') AS fecha,
-              COUNT(*) AS total
-            FROM asistencia
-            WHERE DATE(fecha_asistencia) BETWEEN ? AND ?
-            GROUP BY DATE(fecha_asistencia)
-            ORDER BY DATE(fecha_asistencia) ASC
+              DATE_FORMAT(fecha_base, '%Y-%m-%d') AS fecha,
+              total
+            FROM (
+              SELECT DATE(fecha_asistencia) AS fecha_base, COUNT(*) AS total
+              FROM asistencia
+              WHERE DATE(fecha_asistencia) BETWEEN ? AND ?
+              GROUP BY DATE(fecha_asistencia)
+            ) t
+            ORDER BY fecha_base ASC
           `,
           [inicio, fin]
         ),
-        dbPromise.query(
+        safeQuery(
+          "serie_registros",
           `
             SELECT
-              DATE_FORMAT(DATE(fecha_registro), '%Y-%m-%d') AS fecha,
-              COUNT(*) AS total
-            FROM usuarios
-            WHERE DATE(fecha_registro) BETWEEN ? AND ?
-            GROUP BY DATE(fecha_registro)
-            ORDER BY DATE(fecha_registro) ASC
+              DATE_FORMAT(fecha_base, '%Y-%m-%d') AS fecha,
+              total
+            FROM (
+              SELECT DATE(fecha_registro) AS fecha_base, COUNT(*) AS total
+              FROM usuarios
+              WHERE DATE(fecha_registro) BETWEEN ? AND ?
+              GROUP BY DATE(fecha_registro)
+            ) t
+            ORDER BY fecha_base ASC
           `,
           [inicio, fin]
         ),
-        dbPromise.query(
+        safeQuery(
+          "serie_inscripciones",
           `
             SELECT
-              DATE_FORMAT(DATE(fecha_inicio), '%Y-%m-%d') AS fecha,
-              COUNT(*) AS total
-            FROM inscripciones
-            WHERE DATE(fecha_inicio) BETWEEN ? AND ?
-            GROUP BY DATE(fecha_inicio)
-            ORDER BY DATE(fecha_inicio) ASC
+              DATE_FORMAT(fecha_base, '%Y-%m-%d') AS fecha,
+              total
+            FROM (
+              SELECT DATE(fecha_inicio) AS fecha_base, COUNT(*) AS total
+              FROM inscripciones
+              WHERE DATE(fecha_inicio) BETWEEN ? AND ?
+              GROUP BY DATE(fecha_inicio)
+            ) t
+            ORDER BY fecha_base ASC
           `,
           [inicio, fin]
         ),
-        dbPromise.query(
+        safeQuery(
+          "serie_vencimientos",
           `
             SELECT
-              DATE_FORMAT(DATE(fecha_fin), '%Y-%m-%d') AS fecha,
-              COUNT(*) AS total
-            FROM inscripciones
-            WHERE DATE(fecha_fin) BETWEEN ? AND ?
-            GROUP BY DATE(fecha_fin)
-            ORDER BY DATE(fecha_fin) ASC
+              DATE_FORMAT(fecha_base, '%Y-%m-%d') AS fecha,
+              total
+            FROM (
+              SELECT DATE(fecha_fin) AS fecha_base, COUNT(*) AS total
+              FROM inscripciones
+              WHERE DATE(fecha_fin) BETWEEN ? AND ?
+              GROUP BY DATE(fecha_fin)
+            ) t
+            ORDER BY fecha_base ASC
           `,
           [inicio, fin]
         ),
@@ -1152,6 +1193,7 @@ app.get(
           asistencias: asistenciasDetalleRows || [],
           vencimientos: vencimientosDetalleRows || [],
         },
+        warnings,
       });
     } catch (error) {
       return res.status(500).json({
