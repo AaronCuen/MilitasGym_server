@@ -8,6 +8,6 @@ RUN npm install --omit=dev
 
 COPY server/ .
 
-EXPOSE 3000
+EXPOSE 4000
 
 CMD ["node", "index.js"]

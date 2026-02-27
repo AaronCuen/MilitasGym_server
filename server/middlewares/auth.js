@@ -14,10 +14,11 @@ function verifyToken(req, res, next) {
     req.user = decoded; // { id, nombre, rol }
     next();
   } catch (err) {
-    return res.status(403).json({ message: "Token inválido" });
+    if (err?.name === "TokenExpiredError") {
+      return res.status(401).json({ message: "Token expirado" });
+    }
+    return res.status(401).json({ message: "Token invalido" });
   }
 }
-
-
 
 module.exports = verifyToken;

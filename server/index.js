@@ -293,29 +293,57 @@ app.put(
       }
 
       let membresiaFinal = Number(membresia_id);
+      const [ultima] = await conn.query(
+        `
+          SELECT id, membresia_id
+          FROM inscripciones
+          WHERE usuario_id = ?
+          ORDER BY fecha_fin DESC, id DESC
+          LIMIT 1
+        `,
+        [id]
+      );
+
       if (!Number.isFinite(membresiaFinal) || membresiaFinal <= 0) {
-        const [ultima] = await conn.query(
-          `
-            SELECT membresia_id
-            FROM inscripciones
-            WHERE usuario_id = ?
-            ORDER BY fecha_fin DESC
-            LIMIT 1
-          `,
-          [id]
-        );
         membresiaFinal = ultima.length ? Number(ultima[0].membresia_id) : 4;
       }
 
-      await conn.query("DELETE FROM inscripciones WHERE usuario_id = ?", [id]);
+      let inscripcionObjetivoId = null;
 
-      await conn.query(
-        `
-          INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-          VALUES (?, ?, ?, ?)
-        `,
-        [id, membresiaFinal, fecha_inicio, fecha_fin]
-      );
+      if (ultima.length) {
+        await conn.query(
+          `
+            UPDATE inscripciones
+            SET membresia_id = ?, fecha_inicio = ?, fecha_fin = ?
+            WHERE id = ?
+          `,
+          [membresiaFinal, fecha_inicio, fecha_fin, ultima[0].id]
+        );
+        inscripcionObjetivoId = Number(ultima[0].id);
+      } else {
+        const [insertResult] = await conn.query(
+          `
+            INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
+            VALUES (?, ?, ?, ?)
+          `,
+          [id, membresiaFinal, fecha_inicio, fecha_fin]
+        );
+        inscripcionObjetivoId = Number(insertResult.insertId);
+      }
+
+      if (inscripcionObjetivoId) {
+        // Keep historical rows before the edited start date, but remove rows
+        // from that point forward that would override/interfere the correction.
+        await conn.query(
+          `
+            DELETE FROM inscripciones
+            WHERE usuario_id = ?
+              AND id <> ?
+              AND fecha_fin >= DATE(?)
+          `,
+          [id, inscripcionObjetivoId, fecha_inicio]
+        );
+      }
 
       await conn.commit();
       return res.json({ message: "Inscripcion actualizada correctamente" });
