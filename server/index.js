@@ -1,4 +1,4 @@
-﻿require("dotenv").config();
+require("dotenv").config();
 process.env.TZ = process.env.TZ || "America/Hermosillo";
 const jwt = require("jsonwebtoken");
 const express = require("express");
@@ -1262,9 +1262,13 @@ app.get(
         usuario: null,
         asistencias: [],
       };
+      let inscripcionesUsuario = {
+        usuario: null,
+        inscripciones: [],
+      };
 
       if (usuarioIdParam !== null) {
-        const [usuarioRows, asistenciaUsuarioRows] = await Promise.all([
+        const [usuarioRows, asistenciaUsuarioRows, inscripcionesUsuarioRows] = await Promise.all([
           safeQuery(
             "usuario_busqueda",
             `
@@ -1288,11 +1292,36 @@ app.get(
             `,
             [usuarioIdParam]
           ),
+          safeQuery(
+            "inscripciones_usuario_busqueda",
+            `
+              SELECT
+                i.id AS inscripcion_id,
+                CASE
+                  WHEN i.membresia_id = 1 THEN 'Dia'
+                  WHEN i.membresia_id = 2 THEN 'Semanal'
+                  WHEN i.membresia_id = 3 THEN 'Mensual'
+                  WHEN i.membresia_id = 4 THEN 'Otro'
+                  ELSE CONCAT('Membresia ', i.membresia_id)
+                END AS membresia_nombre,
+                DATE_FORMAT(i.fecha_inicio, '%Y-%m-%d') AS fecha_inicio,
+                DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin
+              FROM inscripciones i
+              WHERE i.usuario_id = ?
+              ORDER BY i.fecha_inicio DESC, i.id DESC
+              LIMIT 500
+            `,
+            [usuarioIdParam]
+          ),
         ]);
 
         asistenciaUsuario = {
           usuario: usuarioRows[0] || null,
           asistencias: asistenciaUsuarioRows || [],
+        };
+        inscripcionesUsuario = {
+          usuario: usuarioRows[0] || null,
+          inscripciones: inscripcionesUsuarioRows || [],
         };
       }
 
@@ -1321,6 +1350,7 @@ app.get(
           vencimientos_dia: vencimientosDiaRows || [],
           vencimientos_proximos_7_dias: vencimientosProximosRows || [],
           asistencia_usuario: asistenciaUsuario,
+          inscripciones_usuario: inscripcionesUsuario,
         },
         warnings,
       });
@@ -1532,5 +1562,3 @@ app.listen(PORT, () => {
   // Repeat cleanup every 12 hours.
   setInterval(runInactiveCleanup, 12 * 60 * 60 * 1000);
 });
-
-
