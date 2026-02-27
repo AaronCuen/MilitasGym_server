@@ -1030,8 +1030,14 @@ app.get(
         registrosRows,
         inscripcionesRows,
         vencimientosRows,
+        totalAsistenciasDiaRows,
+        totalRegistrosDiaRows,
+        totalInscripcionesDiaRows,
+        totalVencimientosDiaRows,
         asistenciasDiaRows,
         registrosDiaRows,
+        inscripcionesDiaRows,
+        vencimientosDiaRows,
         vencimientosProximosRows,
         serieInscripcionesRows,
         serieVencimientosRows,
@@ -1073,6 +1079,42 @@ app.get(
           [inicio, fin]
         ),
         safeQuery(
+          "total_asistencias_dia",
+          `
+            SELECT COUNT(*) AS total
+            FROM asistencia
+            WHERE DATE(fecha_asistencia) = ?
+          `,
+          [dia]
+        ),
+        safeQuery(
+          "total_registros_dia",
+          `
+            SELECT COUNT(*) AS total
+            FROM usuarios
+            WHERE DATE(fecha_registro) = ?
+          `,
+          [dia]
+        ),
+        safeQuery(
+          "total_inscripciones_dia",
+          `
+            SELECT COUNT(*) AS total
+            FROM inscripciones
+            WHERE DATE(fecha_inicio) = ?
+          `,
+          [dia]
+        ),
+        safeQuery(
+          "total_vencimientos_dia",
+          `
+            SELECT COUNT(*) AS total
+            FROM inscripciones
+            WHERE DATE(fecha_fin) = ?
+          `,
+          [dia]
+        ),
+        safeQuery(
           "detalle_asistencias_dia",
           `
             SELECT
@@ -1085,7 +1127,6 @@ app.get(
             INNER JOIN usuarios u ON u.id = a.usuario_id
             WHERE DATE(a.fecha_asistencia) = ?
             ORDER BY a.fecha_asistencia DESC
-            LIMIT 300
           `,
           [dia]
         ),
@@ -1101,7 +1142,54 @@ app.get(
             FROM usuarios u
             WHERE DATE(u.fecha_registro) = ?
             ORDER BY u.fecha_registro DESC
-            LIMIT 300
+          `,
+          [dia]
+        ),
+        safeQuery(
+          "detalle_inscripciones_dia",
+          `
+            SELECT
+              i.id AS inscripcion_id,
+              u.id AS usuario_id,
+              u.nombre,
+              u.apellido,
+              CASE
+                WHEN i.membresia_id = 1 THEN 'Dia'
+                WHEN i.membresia_id = 2 THEN 'Semanal'
+                WHEN i.membresia_id = 3 THEN 'Mensual'
+                WHEN i.membresia_id = 4 THEN 'Otro'
+                ELSE CONCAT('Membresia ', i.membresia_id)
+              END AS membresia_nombre,
+              DATE_FORMAT(i.fecha_inicio, '%Y-%m-%d') AS fecha_inicio,
+              DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin
+            FROM inscripciones i
+            INNER JOIN usuarios u ON u.id = i.usuario_id
+            WHERE DATE(i.fecha_inicio) = ?
+            ORDER BY i.fecha_inicio DESC, i.id DESC
+          `,
+          [dia]
+        ),
+        safeQuery(
+          "detalle_vencimientos_dia",
+          `
+            SELECT
+              i.id AS inscripcion_id,
+              u.id AS usuario_id,
+              u.nombre,
+              u.apellido,
+              CASE
+                WHEN i.membresia_id = 1 THEN 'Dia'
+                WHEN i.membresia_id = 2 THEN 'Semanal'
+                WHEN i.membresia_id = 3 THEN 'Mensual'
+                WHEN i.membresia_id = 4 THEN 'Otro'
+                ELSE CONCAT('Membresia ', i.membresia_id)
+              END AS membresia_nombre,
+              DATE_FORMAT(i.fecha_inicio, '%Y-%m-%d') AS fecha_inicio,
+              DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin
+            FROM inscripciones i
+            INNER JOIN usuarios u ON u.id = i.usuario_id
+            WHERE DATE(i.fecha_fin) = ?
+            ORDER BY i.fecha_fin ASC, i.id ASC
           `,
           [dia]
         ),
@@ -1216,6 +1304,12 @@ app.get(
           inscripciones_periodo: Number(inscripcionesRows[0]?.total || 0),
           vencimientos_periodo: Number(vencimientosRows[0]?.total || 0),
         },
+        totales_dia: {
+          asistencias: Number(totalAsistenciasDiaRows[0]?.total || 0),
+          registros: Number(totalRegistrosDiaRows[0]?.total || 0),
+          inscripciones: Number(totalInscripcionesDiaRows[0]?.total || 0),
+          vencimientos: Number(totalVencimientosDiaRows[0]?.total || 0),
+        },
         series: {
           inscripciones_por_dia: serieInscripcionesRows || [],
           vencimientos_por_dia: serieVencimientosRows || [],
@@ -1223,6 +1317,8 @@ app.get(
         detalle: {
           asistencias_dia: asistenciasDiaRows || [],
           registros_dia: registrosDiaRows || [],
+          inscripciones_dia: inscripcionesDiaRows || [],
+          vencimientos_dia: vencimientosDiaRows || [],
           vencimientos_proximos_7_dias: vencimientosProximosRows || [],
           asistencia_usuario: asistenciaUsuario,
         },
