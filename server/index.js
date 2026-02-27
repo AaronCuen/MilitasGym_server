@@ -528,7 +528,7 @@ app.post("/login", (req, res) => {
           rol: recep.rol
         },
         process.env.JWT_SECRET,
-        { expiresIn: "5m" }
+        { expiresIn: "8h" }
       );
 
       // Se envia el token + datos basicos
