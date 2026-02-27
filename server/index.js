@@ -1041,6 +1041,8 @@ app.get(
         vencimientosProximosRows,
         serieInscripcionesRows,
         serieVencimientosRows,
+        usuariosActivosRows,
+        usuariosInactivosRows,
       ] = await Promise.all([
         safeQuery(
           "asistencias_periodo",
@@ -1256,6 +1258,34 @@ app.get(
           `,
           [inicio, fin]
         ),
+        safeQuery(
+          "total_usuarios_activos",
+          `
+            SELECT COUNT(*) AS total
+            FROM usuarios u
+            LEFT JOIN (
+              SELECT usuario_id, MAX(fecha_fin) AS fecha_fin
+              FROM inscripciones
+              GROUP BY usuario_id
+            ) ult ON ult.usuario_id = u.id
+            WHERE ult.fecha_fin IS NOT NULL
+              AND DATE(ult.fecha_fin) >= CURDATE()
+          `
+        ),
+        safeQuery(
+          "total_usuarios_inactivos",
+          `
+            SELECT COUNT(*) AS total
+            FROM usuarios u
+            LEFT JOIN (
+              SELECT usuario_id, MAX(fecha_fin) AS fecha_fin
+              FROM inscripciones
+              GROUP BY usuario_id
+            ) ult ON ult.usuario_id = u.id
+            WHERE ult.fecha_fin IS NULL
+              OR DATE(ult.fecha_fin) < CURDATE()
+          `
+        ),
       ]);
 
       let asistenciaUsuario = {
@@ -1332,6 +1362,8 @@ app.get(
           registros_nuevos_periodo: Number(registrosRows[0]?.total || 0),
           inscripciones_periodo: Number(inscripcionesRows[0]?.total || 0),
           vencimientos_periodo: Number(vencimientosRows[0]?.total || 0),
+          usuarios_activos_total: Number(usuariosActivosRows[0]?.total || 0),
+          usuarios_inactivos_total: Number(usuariosInactivosRows[0]?.total || 0),
         },
         totales_dia: {
           asistencias: Number(totalAsistenciasDiaRows[0]?.total || 0),
