@@ -934,7 +934,7 @@ app.post(
 
     const sqlAsistencia = `
       INSERT INTO asistencia (usuario_id, fecha_asistencia)
-      VALUES (?, NOW())
+      VALUES (?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '-07:00'))
     `;
 
     db.query(sqlAsistencia, [usuario_id], (err2) => {
@@ -984,7 +984,12 @@ app.get(
   verifyToken,
   requireRole(["admin", "recepcionista"]),
   async (req, res) => {
-    const { inicio: inicioRaw, fin: finRaw } = req.query;
+    const {
+      inicio: inicioRaw,
+      fin: finRaw,
+      dia: diaRaw,
+      usuario_id: usuarioIdRaw,
+    } = req.query;
     const rango = resolveDashboardRange(inicioRaw, finRaw);
 
     if (!rango.ok) {
@@ -992,6 +997,21 @@ app.get(
     }
 
     const { inicio, fin } = rango;
+    const dia = isISODateString(diaRaw) ? diaRaw : fin;
+
+    const usuarioIdParam =
+      typeof usuarioIdRaw === "string" && usuarioIdRaw.trim() !== ""
+        ? Number(usuarioIdRaw)
+        : null;
+
+    if (
+      usuarioIdParam !== null &&
+      (!Number.isInteger(usuarioIdParam) || usuarioIdParam <= 0)
+    ) {
+      return res.status(400).json({
+        message: "usuario_id debe ser un numero entero positivo",
+      });
+    }
 
     try {
       const warnings = [];
@@ -1008,26 +1028,16 @@ app.get(
       };
 
       const [
-        asistenciasHoyRows,
         asistenciasPeriodoRows,
         registrosRows,
         inscripcionesRows,
         vencimientosRows,
-        asistenciasDetalleRows,
-        vencimientosDetalleRows,
-        serieAsistenciasRows,
-        serieRegistrosRows,
+        asistenciasDiaRows,
+        registrosDiaRows,
+        vencimientosProximosRows,
         serieInscripcionesRows,
         serieVencimientosRows,
       ] = await Promise.all([
-        safeQuery(
-          "asistencias_hoy",
-          `
-            SELECT COUNT(*) AS total
-            FROM asistencia
-            WHERE DATE(fecha_asistencia) = CURDATE()
-          `
-        ),
         safeQuery(
           "asistencias_periodo",
           `
@@ -1065,25 +1075,40 @@ app.get(
           [inicio, fin]
         ),
         safeQuery(
-          "detalle_asistencias",
+          "detalle_asistencias_dia",
           `
             SELECT
-              a.id AS asistencia_id,
               u.id AS usuario_id,
               u.nombre,
               u.apellido,
               DATE_FORMAT(a.fecha_asistencia, '%Y-%m-%d') AS fecha,
-              DATE_FORMAT(a.fecha_asistencia, '%H:%i:%s') AS hora
+              DATE_FORMAT(a.fecha_asistencia, '%h:%i:%s %p') AS hora_am_pm
             FROM asistencia a
             INNER JOIN usuarios u ON u.id = a.usuario_id
-            WHERE DATE(a.fecha_asistencia) BETWEEN ? AND ?
+            WHERE DATE(a.fecha_asistencia) = ?
             ORDER BY a.fecha_asistencia DESC
             LIMIT 300
           `,
-          [inicio, fin]
+          [dia]
         ),
         safeQuery(
-          "detalle_vencimientos",
+          "detalle_registros_dia",
+          `
+            SELECT
+              u.id AS usuario_id,
+              u.nombre,
+              u.apellido,
+              DATE_FORMAT(u.fecha_registro, '%Y-%m-%d') AS fecha_registro,
+              DATE_FORMAT(u.fecha_registro, '%h:%i:%s %p') AS hora_registro_am_pm
+            FROM usuarios u
+            WHERE DATE(u.fecha_registro) = ?
+            ORDER BY u.fecha_registro DESC
+            LIMIT 300
+          `,
+          [dia]
+        ),
+        safeQuery(
+          "detalle_vencimientos_proximos_7_dias",
           `
             SELECT
               i.id AS inscripcion_id,
@@ -1099,46 +1124,19 @@ app.get(
                 ELSE CONCAT('Membresia ', i.membresia_id)
               END AS membresia_nombre,
               DATE_FORMAT(i.fecha_inicio, '%Y-%m-%d') AS fecha_inicio,
-              DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin
+              DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin,
+              DATEDIFF(i.fecha_fin, CURDATE()) AS dias_restantes
             FROM inscripciones i
             INNER JOIN usuarios u ON u.id = i.usuario_id
-            WHERE DATE(i.fecha_fin) BETWEEN ? AND ?
+            INNER JOIN (
+              SELECT usuario_id, MAX(fecha_fin) AS ultima_fecha_fin
+              FROM inscripciones
+              GROUP BY usuario_id
+            ) ult ON ult.usuario_id = i.usuario_id AND ult.ultima_fecha_fin = i.fecha_fin
+            WHERE DATE(i.fecha_fin) BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
             ORDER BY i.fecha_fin ASC, u.id ASC
             LIMIT 300
-          `,
-          [inicio, fin]
-        ),
-        safeQuery(
-          "serie_asistencias",
           `
-            SELECT
-              DATE_FORMAT(fecha_base, '%Y-%m-%d') AS fecha,
-              total
-            FROM (
-              SELECT DATE(fecha_asistencia) AS fecha_base, COUNT(*) AS total
-              FROM asistencia
-              WHERE DATE(fecha_asistencia) BETWEEN ? AND ?
-              GROUP BY DATE(fecha_asistencia)
-            ) t
-            ORDER BY fecha_base ASC
-          `,
-          [inicio, fin]
-        ),
-        safeQuery(
-          "serie_registros",
-          `
-            SELECT
-              DATE_FORMAT(fecha_base, '%Y-%m-%d') AS fecha,
-              total
-            FROM (
-              SELECT DATE(fecha_registro) AS fecha_base, COUNT(*) AS total
-              FROM usuarios
-              WHERE DATE(fecha_registro) BETWEEN ? AND ?
-              GROUP BY DATE(fecha_registro)
-            ) t
-            ORDER BY fecha_base ASC
-          `,
-          [inicio, fin]
         ),
         safeQuery(
           "serie_inscripciones",
@@ -1174,24 +1172,61 @@ app.get(
         ),
       ]);
 
+      let asistenciaUsuario = {
+        usuario: null,
+        asistencias: [],
+      };
+
+      if (usuarioIdParam !== null) {
+        const [usuarioRows, asistenciaUsuarioRows] = await Promise.all([
+          safeQuery(
+            "usuario_busqueda",
+            `
+              SELECT id, nombre, apellido
+              FROM usuarios
+              WHERE id = ?
+              LIMIT 1
+            `,
+            [usuarioIdParam]
+          ),
+          safeQuery(
+            "asistencia_usuario_busqueda",
+            `
+              SELECT
+                DATE_FORMAT(a.fecha_asistencia, '%Y-%m-%d') AS fecha,
+                DATE_FORMAT(a.fecha_asistencia, '%h:%i:%s %p') AS hora_am_pm
+              FROM asistencia a
+              WHERE a.usuario_id = ?
+              ORDER BY a.fecha_asistencia DESC
+              LIMIT 500
+            `,
+            [usuarioIdParam]
+          ),
+        ]);
+
+        asistenciaUsuario = {
+          usuario: usuarioRows[0] || null,
+          asistencias: asistenciaUsuarioRows || [],
+        };
+      }
+
       return res.json({
-        rango: { inicio, fin },
+        rango: { inicio, fin, dia },
         tarjetas: {
-          asistencias_hoy: Number(asistenciasHoyRows[0]?.total || 0),
           asistencias_periodo: Number(asistenciasPeriodoRows[0]?.total || 0),
           registros_nuevos_periodo: Number(registrosRows[0]?.total || 0),
           inscripciones_periodo: Number(inscripcionesRows[0]?.total || 0),
           vencimientos_periodo: Number(vencimientosRows[0]?.total || 0),
         },
         series: {
-          asistencias_por_dia: serieAsistenciasRows || [],
-          registros_por_dia: serieRegistrosRows || [],
           inscripciones_por_dia: serieInscripcionesRows || [],
           vencimientos_por_dia: serieVencimientosRows || [],
         },
         detalle: {
-          asistencias: asistenciasDetalleRows || [],
-          vencimientos: vencimientosDetalleRows || [],
+          asistencias_dia: asistenciasDiaRows || [],
+          registros_dia: registrosDiaRows || [],
+          vencimientos_proximos_7_dias: vencimientosProximosRows || [],
+          asistencia_usuario: asistenciaUsuario,
         },
         warnings,
       });
