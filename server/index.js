@@ -661,6 +661,14 @@ app.post(
   }
 
   try {
+    const [existing] = await dbPromise.query(
+      "SELECT id FROM recepcionistas WHERE usuario = ? LIMIT 1",
+      [usuario]
+    );
+    if (existing.length) {
+      return res.status(409).json({ message: "El usuario ya existe" });
+    }
+
     const hash = await bcrypt.hash(password, 10);
 
     const sql = `
@@ -694,6 +702,135 @@ app.post(
   }
 });
 
+app.get(
+  "/recepcionistas",
+  verifyToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const sucursalId = resolveSucursalIdForRead(req, { allowQuery: true });
+      let sql = `
+        SELECT r.id, r.nombre, r.usuario, r.rol, r.sucursal_id,
+               s.nombre AS sucursal_nombre
+        FROM recepcionistas r
+        LEFT JOIN sucursales s ON s.id = r.sucursal_id
+        WHERE 1=1
+      `;
+      const params = [];
+      if (sucursalId) {
+        sql += " AND r.sucursal_id = ?";
+        params.push(sucursalId);
+      }
+      sql += " ORDER BY r.id DESC";
+
+      const [rows] = await dbPromise.query(sql, params);
+      return res.json(rows);
+    } catch (error) {
+      return res.status(500).json({ message: "Error al obtener recepcionistas" });
+    }
+  }
+);
+
+app.put(
+  "/recepcionistas/:id",
+  verifyToken,
+  requireAdmin,
+  async (req, res) => {
+    const recepId = parsePositiveInt(req.params.id);
+    if (!recepId) {
+      return res.status(400).json({ message: "ID invalido" });
+    }
+
+    const { nombre, usuario, password, rol, sucursal_id } = req.body || {};
+    const updates = [];
+    const params = [];
+
+    if (typeof nombre === "string" && nombre.trim()) {
+      updates.push("nombre = ?");
+      params.push(nombre.trim());
+    }
+
+    if (typeof usuario === "string" && usuario.trim()) {
+      const usuarioLimpio = usuario.trim();
+      const [existing] = await dbPromise.query(
+        "SELECT id FROM recepcionistas WHERE usuario = ? AND id <> ? LIMIT 1",
+        [usuarioLimpio, recepId]
+      );
+      if (existing.length) {
+        return res.status(409).json({ message: "El usuario ya existe" });
+      }
+      updates.push("usuario = ?");
+      params.push(usuarioLimpio);
+    }
+
+    if (typeof password === "string" && password) {
+      const hash = await bcrypt.hash(password, 10);
+      updates.push("password = ?");
+      params.push(hash);
+    }
+
+    if (typeof rol === "string" && ["admin", "recepcionista"].includes(rol)) {
+      updates.push("rol = ?");
+      params.push(rol);
+    }
+
+    if (typeof sucursal_id !== "undefined") {
+      const sucursalId = parsePositiveInt(sucursal_id);
+      if (!sucursalId) {
+        return res.status(400).json({ message: "sucursal_id invalido" });
+      }
+      updates.push("sucursal_id = ?");
+      params.push(sucursalId);
+    }
+
+    if (!updates.length) {
+      return res.status(400).json({ message: "No hay cambios para guardar" });
+    }
+
+    try {
+      params.push(recepId);
+      await dbPromise.query(
+        `
+          UPDATE recepcionistas
+          SET ${updates.join(", ")}
+          WHERE id = ?
+        `,
+        params
+      );
+      return res.json({ message: "Recepcionista actualizada" });
+    } catch (error) {
+      return res.status(500).json({ message: "Error al actualizar recepcionista" });
+    }
+  }
+);
+
+app.delete(
+  "/recepcionistas/:id",
+  verifyToken,
+  requireAdmin,
+  async (req, res) => {
+    const recepId = parsePositiveInt(req.params.id);
+    if (!recepId) {
+      return res.status(400).json({ message: "ID invalido" });
+    }
+
+    try {
+      const [existing] = await dbPromise.query(
+        "SELECT id FROM recepcionistas WHERE id = ? LIMIT 1",
+        [recepId]
+      );
+      if (!existing.length) {
+        return res.status(404).json({ message: "Recepcionista no encontrada" });
+      }
+
+      await dbPromise.query("DELETE FROM recepcionistas WHERE id = ?", [recepId]);
+      return res.json({ message: "Recepcionista eliminada" });
+    } catch (error) {
+      return res.status(500).json({ message: "Error al eliminar recepcionista" });
+    }
+  }
+);
+
 
 /* ==========================
    LOGIN RECEPCIONISTA
@@ -701,9 +838,8 @@ app.post(
 
 // NO REQUIERE PROTECCION
 app.post("/login", (req, res) => {
-  const { usuario, password, sucursal_id } = req.body;
+  const { usuario, password } = req.body;
   const usuarioLimpio = (usuario || "").trim();
-  const sucursalId = parsePositiveInt(sucursal_id);
 
   if (!usuarioLimpio || typeof password !== "string" || !password) {
     return res
@@ -711,21 +847,21 @@ app.post("/login", (req, res) => {
       .json({ message: "Usuario y contrasena son obligatorios" });
   }
 
-  let sql = "SELECT * FROM recepcionistas WHERE usuario = ?";
-  const params = [usuarioLimpio];
-  if (sucursalId) {
-    sql += " AND sucursal_id = ?";
-    params.push(sucursalId);
-  }
+  const sql = `
+    SELECT r.*, s.nombre AS sucursal_nombre
+    FROM recepcionistas r
+    LEFT JOIN sucursales s ON s.id = r.sucursal_id
+    WHERE r.usuario = ?
+  `;
 
-  db.query(sql, params, async (err, results) => {
+  db.query(sql, [usuarioLimpio], async (err, results) => {
     if (err) return res.status(500).json(err);
 
     if (results.length === 0)
       return res.status(401).json({ message: "Usuario no encontrado" });
-    if (!sucursalId && results.length > 1) {
+    if (results.length > 1) {
       return res.status(409).json({
-        message: "Usuario existe en varias sucursales. Envia sucursal_id.",
+        message: "Usuario duplicado. Contacta al administrador.",
       });
     }
 
@@ -743,6 +879,7 @@ app.post("/login", (req, res) => {
           nombre: recep.nombre,
           rol: recep.rol,
           sucursal_id: recep.sucursal_id,
+          sucursal_nombre: recep.sucursal_nombre || null,
         },
         process.env.JWT_SECRET,
         { expiresIn: "8h" }
@@ -756,6 +893,7 @@ app.post("/login", (req, res) => {
           nombre: recep.nombre,
           rol: recep.rol,
           sucursal_id: recep.sucursal_id,
+          sucursal_nombre: recep.sucursal_nombre || null,
         }
       });
     } catch (error) {
