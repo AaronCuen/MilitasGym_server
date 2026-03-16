@@ -156,6 +156,186 @@ const resolveDashboardRange = (inicioRaw, finRaw) => {
   return { ok: true, inicio, fin };
 };
 
+const isAdmin = (req) => req.user?.rol === "admin";
+
+const parsePositiveInt = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+};
+
+const getTokenSucursalId = (req) => parsePositiveInt(req.user?.sucursal_id);
+
+const resolveSucursalIdForRead = (req, { allowQuery = false } = {}) => {
+  if (isAdmin(req)) {
+    if (allowQuery) {
+      const requested = parsePositiveInt(req.query?.sucursal_id);
+      return requested || null;
+    }
+    return null; // Admin ve todas por defecto
+  }
+  return getTokenSucursalId(req);
+};
+
+const resolveSucursalIdForWrite = (req) => {
+  if (isAdmin(req)) {
+    const requested = parsePositiveInt(req.body?.sucursal_id);
+    return requested || getTokenSucursalId(req);
+  }
+  return getTokenSucursalId(req);
+};
+
+const requireSucursalForNonAdmin = (req, res) => {
+  if (!isAdmin(req) && !getTokenSucursalId(req)) {
+    res.status(403).json({ message: "Sucursal no asignada" });
+    return false;
+  }
+  return true;
+};
+
+const buildSucursalFilter = (sucursalId, alias = null) => {
+  if (!sucursalId) return { clause: "", params: [] };
+  const column = alias ? `${alias}.sucursal_id` : "sucursal_id";
+  return { clause: ` AND ${column} = ?`, params: [sucursalId] };
+};
+
+/* ==========================
+   SUCURSALES
+========================== */
+app.get(
+  "/sucursales",
+  verifyToken,
+  requireRole(["admin", "recepcionista"]),
+  async (req, res) => {
+    try {
+      const sucursalId = getTokenSucursalId(req);
+      if (isAdmin(req)) {
+        const [rows] = await dbPromise.query(
+          `
+            SELECT id, nombre, direccion, telefono, activo
+            FROM sucursales
+            ORDER BY nombre ASC, id ASC
+          `
+        );
+        return res.json(rows);
+      }
+
+      if (!sucursalId) {
+        return res.status(403).json({ message: "Sucursal no asignada" });
+      }
+
+      const [rows] = await dbPromise.query(
+        `
+          SELECT id, nombre, direccion, telefono, activo
+          FROM sucursales
+          WHERE id = ?
+          LIMIT 1
+        `,
+        [sucursalId]
+      );
+      return res.json(rows);
+    } catch (error) {
+      return res.status(500).json({ message: "Error al cargar sucursales" });
+    }
+  }
+);
+
+app.post(
+  "/sucursales",
+  verifyToken,
+  requireAdmin,
+  async (req, res) => {
+    const { nombre, direccion, telefono, activo } = req.body || {};
+    const nombreLimpio = (nombre || "").trim();
+    if (!nombreLimpio) {
+      return res.status(400).json({ message: "El nombre es obligatorio" });
+    }
+
+    try {
+      const [result] = await dbPromise.query(
+        `
+          INSERT INTO sucursales (nombre, direccion, telefono, activo)
+          VALUES (?, ?, ?, ?)
+        `,
+        [
+          nombreLimpio,
+          direccion ? String(direccion).trim() : null,
+          telefono ? String(telefono).trim() : null,
+          typeof activo === "number" ? activo : 1,
+        ]
+      );
+
+      return res.status(201).json({
+        id: result.insertId,
+        nombre: nombreLimpio,
+        direccion: direccion ? String(direccion).trim() : null,
+        telefono: telefono ? String(telefono).trim() : null,
+        activo: typeof activo === "number" ? activo : 1,
+      });
+    } catch (error) {
+      if (error?.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({ message: "La sucursal ya existe" });
+      }
+      return res.status(500).json({ message: "Error al crear sucursal" });
+    }
+  }
+);
+
+app.put(
+  "/sucursales/:id",
+  verifyToken,
+  requireAdmin,
+  async (req, res) => {
+    const sucursalId = parsePositiveInt(req.params.id);
+    if (!sucursalId) {
+      return res.status(400).json({ message: "Sucursal invalida" });
+    }
+
+    const { nombre, direccion, telefono, activo } = req.body || {};
+    const updates = [];
+    const params = [];
+
+    if (typeof nombre === "string" && nombre.trim()) {
+      updates.push("nombre = ?");
+      params.push(nombre.trim());
+    }
+    if (typeof direccion !== "undefined") {
+      updates.push("direccion = ?");
+      params.push(direccion ? String(direccion).trim() : null);
+    }
+    if (typeof telefono !== "undefined") {
+      updates.push("telefono = ?");
+      params.push(telefono ? String(telefono).trim() : null);
+    }
+    if (typeof activo !== "undefined") {
+      updates.push("activo = ?");
+      params.push(activo ? 1 : 0);
+    }
+
+    if (!updates.length) {
+      return res.status(400).json({ message: "No hay cambios para guardar" });
+    }
+
+    try {
+      params.push(sucursalId);
+      await dbPromise.query(
+        `
+          UPDATE sucursales
+          SET ${updates.join(", ")}
+          WHERE id = ?
+        `,
+        params
+      );
+      return res.json({ message: "Sucursal actualizada" });
+    } catch (error) {
+      if (error?.code === "ER_DUP_ENTRY") {
+        return res.status(409).json({ message: "La sucursal ya existe" });
+      }
+      return res.status(500).json({ message: "Error al actualizar sucursal" });
+    }
+  }
+);
+
 /* ==========================
    EDITAR USUARIO (PROTEGIDO)
 ========================== */
@@ -165,6 +345,8 @@ app.put(
   requireRole(["admin", "recepcionista"]),
   (req, res) => {
     const { id } = req.params;
+    if (!requireSucursalForNonAdmin(req, res)) return;
+    const sucursalId = resolveSucursalIdForRead(req);
 
     const {
       nombre,
@@ -199,8 +381,13 @@ app.put(
       });
     }
 
-    const sqlOldPhoto = "SELECT foto FROM usuarios WHERE id = ?";
-    db.query(sqlOldPhoto, [id], (oldErr, oldResults) => {
+    let sqlOldPhoto = "SELECT foto FROM usuarios WHERE id = ?";
+    const oldParams = [id];
+    if (sucursalId) {
+      sqlOldPhoto += " AND sucursal_id = ?";
+      oldParams.push(sucursalId);
+    }
+    db.query(sqlOldPhoto, oldParams, (oldErr, oldResults) => {
       if (oldErr) return res.status(500).json(oldErr);
       if (!oldResults.length) {
         return res.status(404).json({ message: "Usuario no encontrado" });
@@ -219,7 +406,7 @@ app.put(
           fecha_nacimiento = ?,
           genero = ?,
           foto = ?
-        WHERE id = ?
+        WHERE id = ?${sucursalId ? " AND sucursal_id = ?" : ""}
       `;
 
       db.query(
@@ -233,6 +420,7 @@ app.put(
           genero || null,
           nuevaFoto,
           id,
+          ...(sucursalId ? [sucursalId] : []),
         ],
         async (err) => {
           if (err) return res.status(500).json(err);
@@ -267,6 +455,8 @@ app.put(
   requireRole(["admin", "recepcionista"]),
   async (req, res) => {
     const { id } = req.params;
+    if (!requireSucursalForNonAdmin(req, res)) return;
+    const sucursalId = resolveSucursalIdForRead(req);
     const { fecha_inicio, fecha_fin, membresia_id } = req.body;
 
     if (!fecha_inicio || !fecha_fin) {
@@ -286,22 +476,24 @@ app.put(
       conn = await dbPromise.getConnection();
       await conn.beginTransaction();
 
-      const [usuarios] = await conn.query("SELECT id FROM usuarios WHERE id = ?", [id]);
+      const userQuery = `SELECT id, sucursal_id FROM usuarios WHERE id = ?${sucursalId ? " AND sucursal_id = ?" : ""}`;
+      const [usuarios] = await conn.query(userQuery, [id, ...(sucursalId ? [sucursalId] : [])]);
       if (!usuarios.length) {
         await conn.rollback();
         return res.status(404).json({ message: "Usuario no encontrado" });
       }
+      const userSucursalId = Number(usuarios[0].sucursal_id);
 
       let membresiaFinal = Number(membresia_id);
       const [ultima] = await conn.query(
         `
           SELECT id, membresia_id
           FROM inscripciones
-          WHERE usuario_id = ?
+          WHERE usuario_id = ? AND sucursal_id = ?
           ORDER BY fecha_fin DESC, id DESC
           LIMIT 1
         `,
-        [id]
+        [id, userSucursalId]
       );
 
       if (!Number.isFinite(membresiaFinal) || membresiaFinal <= 0) {
@@ -315,18 +507,18 @@ app.put(
           `
             UPDATE inscripciones
             SET membresia_id = ?, fecha_inicio = ?, fecha_fin = ?
-            WHERE id = ?
+            WHERE id = ? AND sucursal_id = ?
           `,
-          [membresiaFinal, fecha_inicio, fecha_fin, ultima[0].id]
+          [membresiaFinal, fecha_inicio, fecha_fin, ultima[0].id, userSucursalId]
         );
         inscripcionObjetivoId = Number(ultima[0].id);
       } else {
         const [insertResult] = await conn.query(
           `
-            INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin, sucursal_id)
+            VALUES (?, ?, ?, ?, ?)
           `,
-          [id, membresiaFinal, fecha_inicio, fecha_fin]
+          [id, membresiaFinal, fecha_inicio, fecha_fin, userSucursalId]
         );
         inscripcionObjetivoId = Number(insertResult.insertId);
       }
@@ -340,8 +532,9 @@ app.put(
             WHERE usuario_id = ?
               AND id <> ?
               AND fecha_fin >= DATE(?)
+              AND sucursal_id = ?
           `,
-          [id, inscripcionObjetivoId, fecha_inicio]
+          [id, inscripcionObjetivoId, fecha_inicio, userSucursalId]
         );
       }
 
@@ -371,6 +564,8 @@ app.get(
   (req, res) => {
 
     const { id, nombre, fecha_inicio, fecha_fin, estado } = req.query;
+    if (!requireSucursalForNonAdmin(req, res)) return;
+    const sucursalId = resolveSucursalIdForRead(req, { allowQuery: true });
 
     let sql = `
       SELECT 
@@ -395,6 +590,11 @@ app.get(
     `;
 
     const params = [];
+    const { clause: userFilter, params: userParams } = buildSucursalFilter(sucursalId, "u");
+    if (userFilter) {
+      sql += userFilter;
+      params.push(...userParams);
+    }
 
     // Filtro por ID
     if (id && id.trim() !== "") {
@@ -451,22 +651,26 @@ app.post(
   requireAdmin,
   async (req, res) => {
   const { nombre, usuario, password } = req.body;
+  const sucursalId = resolveSucursalIdForWrite(req);
 
   if (!nombre || !usuario || !password) {
     return res.status(400).json({ message: "Faltan datos" });
+  }
+  if (!sucursalId) {
+    return res.status(400).json({ message: "sucursal_id es obligatorio" });
   }
 
   try {
     const hash = await bcrypt.hash(password, 10);
 
     const sql = `
-      INSERT INTO recepcionistas (nombre, usuario, password, rol)
-      VALUES (?, ?, ?, 'recepcionista')
+      INSERT INTO recepcionistas (nombre, usuario, password, rol, sucursal_id)
+      VALUES (?, ?, ?, 'recepcionista', ?)
     `;
 
     db.query(
       sql,
-      [nombre, usuario, hash],
+      [nombre, usuario, hash, sucursalId],
       (err, result) => {
         if (err) {
           if (err.code === "ER_DUP_ENTRY") {
@@ -480,7 +684,8 @@ app.post(
           id: result.insertId,
           nombre,
           usuario,
-          rol: "recepcionista"
+          rol: "recepcionista",
+          sucursal_id: sucursalId,
         });
       }
     );
@@ -496,8 +701,9 @@ app.post(
 
 // NO REQUIERE PROTECCION
 app.post("/login", (req, res) => {
-  const { usuario, password } = req.body;
+  const { usuario, password, sucursal_id } = req.body;
   const usuarioLimpio = (usuario || "").trim();
+  const sucursalId = parsePositiveInt(sucursal_id);
 
   if (!usuarioLimpio || typeof password !== "string" || !password) {
     return res
@@ -505,13 +711,23 @@ app.post("/login", (req, res) => {
       .json({ message: "Usuario y contrasena son obligatorios" });
   }
 
-  const sql = "SELECT * FROM recepcionistas WHERE usuario = ?";
+  let sql = "SELECT * FROM recepcionistas WHERE usuario = ?";
+  const params = [usuarioLimpio];
+  if (sucursalId) {
+    sql += " AND sucursal_id = ?";
+    params.push(sucursalId);
+  }
 
-  db.query(sql, [usuarioLimpio], async (err, results) => {
+  db.query(sql, params, async (err, results) => {
     if (err) return res.status(500).json(err);
 
     if (results.length === 0)
       return res.status(401).json({ message: "Usuario no encontrado" });
+    if (!sucursalId && results.length > 1) {
+      return res.status(409).json({
+        message: "Usuario existe en varias sucursales. Envia sucursal_id.",
+      });
+    }
 
     try {
       const recep = results[0];
@@ -525,7 +741,8 @@ app.post("/login", (req, res) => {
         {
           id: recep.id,
           nombre: recep.nombre,
-          rol: recep.rol
+          rol: recep.rol,
+          sucursal_id: recep.sucursal_id,
         },
         process.env.JWT_SECRET,
         { expiresIn: "8h" }
@@ -537,7 +754,8 @@ app.post("/login", (req, res) => {
         user: {
           id: recep.id,
           nombre: recep.nombre,
-          rol: recep.rol
+          rol: recep.rol,
+          sucursal_id: recep.sucursal_id,
         }
       });
     } catch (error) {
@@ -569,6 +787,7 @@ app.post(
       fecha_inicio,
       fecha_fin
     } = req.body;
+    const sucursalId = resolveSucursalIdForWrite(req);
 
     const nombreLimpio = (nombre || "").trim();
     const apellidoLimpio = (apellido || "").trim();
@@ -594,6 +813,9 @@ app.post(
     // Validacion basica
     if (!nombreLimpio || !apellidoLimpio || !membresiaId) {
       return res.status(400).json({ message: "Faltan datos obligatorios" });
+    }
+    if (!sucursalId) {
+      return res.status(400).json({ message: "sucursal_id es obligatorio" });
     }
 
     if (telefonoLimpio && !/^\d{10}$/.test(telefonoLimpio)) {
@@ -638,8 +860,8 @@ app.post(
     }
 
     const sqlUser = `
-      INSERT INTO usuarios (nombre, apellido, telefono, email, fecha_nacimiento, foto, fecha_registro)
-      VALUES (?, ?, ?, ?, ?, ?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '-07:00'))
+      INSERT INTO usuarios (nombre, apellido, telefono, email, fecha_nacimiento, foto, fecha_registro, sucursal_id)
+      VALUES (?, ?, ?, ?, ?, ?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '-07:00'), ?)
     `;
 
     let conn;
@@ -655,7 +877,8 @@ app.post(
           telefonoLimpio || "",
           emailLimpio || null,
           fecha_nacimiento || null,
-          foto || null
+          foto || null,
+          sucursalId,
         ]
       );
 
@@ -669,15 +892,16 @@ app.post(
 
         sqlIns = `
           INSERT INTO inscripciones
-          (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-          VALUES (?, ?, ?, ?)
+          (usuario_id, membresia_id, fecha_inicio, fecha_fin, sucursal_id)
+          VALUES (?, ?, ?, ?, ?)
         `;
 
         params = [
           usuario_id,
           membresiaId,
           fechaInicioManual,
-          fechaFinManual
+          fechaFinManual,
+          sucursalId,
         ];
 
       } else {
@@ -685,7 +909,7 @@ app.post(
         // MODO AUTOMATICO (Dia, Semana, Mes)
         sqlIns = `
           INSERT INTO inscripciones
-          (usuario_id, membresia_id, fecha_inicio, fecha_fin)
+          (usuario_id, membresia_id, fecha_inicio, fecha_fin, sucursal_id)
           VALUES (
             ?, 
             ?, 
@@ -695,7 +919,8 @@ app.post(
               WHEN ? = 2 THEN DATE_ADD(DATE(?), INTERVAL 7 DAY)
               WHEN ? = 3 THEN DATE_ADD(DATE(?), INTERVAL 1 MONTH)
               ELSE DATE_ADD(DATE(?), INTERVAL 1 MONTH)
-            END
+            END,
+            ?
           )
         `;
 
@@ -709,7 +934,8 @@ app.post(
           fechaInicioBase,
           membresiaId,
           fechaInicioBase,
-          fechaInicioBase
+          fechaInicioBase,
+          sucursalId,
         ];
       }
 
@@ -751,18 +977,51 @@ app.post(
   "/inscripciones",
   verifyToken,
   requireRole(['admin', 'recepcionista']),
-  (req, res) => {
+  async (req, res) => {
   const { usuario_id, membresia_id, fecha_inicio, fecha_fin } = req.body;
 
-  const sql = `
-    INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-    VALUES (?, ?, ?, ?)
-  `;
+  const usuarioId = parsePositiveInt(usuario_id);
+  const membresiaId = Number(membresia_id);
 
-  db.query(sql, [usuario_id, membresia_id, fecha_inicio, fecha_fin], err => {
-    if (err) return res.status(500).json(err);
+  if (!usuarioId || !membresiaId || !fecha_inicio || !fecha_fin) {
+    return res.status(400).json({ message: "Faltan datos obligatorios" });
+  }
+
+  if (!requireSucursalForNonAdmin(req, res)) return;
+
+  try {
+    const [usuarios] = await dbPromise.query(
+      "SELECT id, sucursal_id FROM usuarios WHERE id = ?",
+      [usuarioId]
+    );
+
+    if (!usuarios.length) {
+      return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+
+    const userSucursalId = Number(usuarios[0].sucursal_id);
+    const tokenSucursalId = getTokenSucursalId(req);
+    if (!isAdmin(req) && tokenSucursalId !== userSucursalId) {
+      return res.status(403).json({ message: "Acceso denegado" });
+    }
+
+    const sql = `
+      INSERT INTO inscripciones (usuario_id, membresia_id, fecha_inicio, fecha_fin, sucursal_id)
+      VALUES (?, ?, ?, ?, ?)
+    `;
+
+    await dbPromise.query(sql, [
+      usuarioId,
+      membresiaId,
+      fecha_inicio,
+      fecha_fin,
+      userSucursalId,
+    ]);
+
     res.json({ message: "Inscripcion creada" });
-  });
+  } catch (err) {
+    return res.status(500).json(err);
+  }
 });
 
 /* ===========================
@@ -775,7 +1034,7 @@ app.post(
   "/inscripciones/renovar",
   verifyToken,
   requireRole(["admin", "recepcionista"]),
-  (req, res) => {
+  async (req, res) => {
 
     const {
       usuario_id,
@@ -784,13 +1043,33 @@ app.post(
       fecha_fin_manual
     } = req.body;
 
-    if (!usuario_id || !membresia_id) {
+    const usuarioId = parsePositiveInt(usuario_id);
+    if (!usuarioId || !membresia_id) {
       return res.status(400).json({
         message: "usuario_id y membresia_id son obligatorios"
       });
     }
 
     const idMembresia = Number(membresia_id);
+    if (!requireSucursalForNonAdmin(req, res)) return;
+
+    let userSucursalId = null;
+    try {
+      const [usuarios] = await dbPromise.query(
+        "SELECT id, sucursal_id FROM usuarios WHERE id = ?",
+        [usuarioId]
+      );
+      if (!usuarios.length) {
+        return res.status(404).json({ message: "Usuario no encontrado" });
+      }
+      userSucursalId = Number(usuarios[0].sucursal_id);
+      const tokenSucursalId = getTokenSucursalId(req);
+      if (!isAdmin(req) && tokenSucursalId !== userSucursalId) {
+        return res.status(403).json({ message: "Acceso denegado" });
+      }
+    } catch (err) {
+      return res.status(500).json(err);
+    }
 
     /* =========================
        CASO MANUAL
@@ -817,13 +1096,13 @@ app.post(
 
       const sqlManual = `
         INSERT INTO inscripciones 
-        (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-        VALUES (?, ?, ?, ?)
+        (usuario_id, membresia_id, fecha_inicio, fecha_fin, sucursal_id)
+        VALUES (?, ?, ?, ?, ?)
       `;
 
       db.query(
         sqlManual,
-        [usuario_id, idMembresia, fechaInicioSQL, fechaFinSQL],
+        [usuarioId, idMembresia, fechaInicioSQL, fechaFinSQL, userSucursalId],
         (err, result) => {
 
           if (err) {
@@ -850,12 +1129,12 @@ app.post(
     const sqlUltima = `
       SELECT fecha_fin
       FROM inscripciones
-      WHERE usuario_id = ?
+      WHERE usuario_id = ? AND sucursal_id = ?
       ORDER BY fecha_fin DESC
       LIMIT 1
     `;
 
-    db.query(sqlUltima, [usuario_id], (err, result) => {
+    db.query(sqlUltima, [usuarioId, userSucursalId], (err, result) => {
 
       if (err) {
         console.error("ERROR CONSULTA ULTIMA:", err);
@@ -893,13 +1172,13 @@ app.post(
 
       const sqlInsert = `
         INSERT INTO inscripciones
-        (usuario_id, membresia_id, fecha_inicio, fecha_fin)
-        VALUES (?, ?, ?, ?)
+        (usuario_id, membresia_id, fecha_inicio, fecha_fin, sucursal_id)
+        VALUES (?, ?, ?, ?, ?)
       `;
 
       db.query(
         sqlInsert,
-        [usuario_id, idMembresia, fechaInicioSQL, fechaFinSQL],
+        [usuarioId, idMembresia, fechaInicioSQL, fechaFinSQL, userSucursalId],
         (err2, result2) => {
 
           if (err2) {
@@ -926,18 +1205,40 @@ app.post(
   "/asistencia/:usuario_id",
   verifyToken,
   requireRole(['admin', 'recepcionista']),
-  (req, res) => {
-  const { usuario_id } = req.params;
+  async (req, res) => {
+  const usuarioId = parsePositiveInt(req.params.usuario_id);
+  if (!usuarioId) {
+    return res.status(400).json({ message: "usuario_id invalido" });
+  }
+  if (!requireSucursalForNonAdmin(req, res)) return;
+
+  let userSucursalId = null;
+  try {
+    const [usuarios] = await dbPromise.query(
+      "SELECT id, sucursal_id FROM usuarios WHERE id = ?",
+      [usuarioId]
+    );
+    if (!usuarios.length) {
+      return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+    userSucursalId = Number(usuarios[0].sucursal_id);
+    const tokenSucursalId = getTokenSucursalId(req);
+    if (!isAdmin(req) && tokenSucursalId !== userSucursalId) {
+      return res.status(403).json({ message: "Acceso denegado" });
+    }
+  } catch (err) {
+    return res.status(500).json(err);
+  }
 
   const sqlInscripcion = `
     SELECT fecha_fin 
     FROM inscripciones
-    WHERE usuario_id = ?
+    WHERE usuario_id = ? AND sucursal_id = ?
     ORDER BY fecha_fin DESC
     LIMIT 1
   `;
 
-  db.query(sqlInscripcion, [usuario_id], (err, results) => {
+  db.query(sqlInscripcion, [usuarioId, userSucursalId], (err, results) => {
     if (err) return res.status(500).json(err);
 
     if (results.length === 0) {
@@ -959,11 +1260,11 @@ app.post(
     }
 
     const sqlAsistencia = `
-      INSERT INTO asistencia (usuario_id, fecha_asistencia)
-      VALUES (?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '-07:00'))
+      INSERT INTO asistencia (usuario_id, fecha_asistencia, sucursal_id)
+      VALUES (?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '-07:00'), ?)
     `;
 
-    db.query(sqlAsistencia, [usuario_id], (err2) => {
+    db.query(sqlAsistencia, [usuarioId, userSucursalId], (err2) => {
       if (err2) return res.status(500).json(err2);
 
       res.json({
@@ -982,18 +1283,40 @@ app.get(
   "/inscripcion/:usuario_id",
   verifyToken,
   requireRole(["admin", "recepcionista"]),
-  (req, res) => {
-  const { usuario_id } = req.params;
+  async (req, res) => {
+  const usuarioId = parsePositiveInt(req.params.usuario_id);
+  if (!usuarioId) {
+    return res.status(400).json({ message: "usuario_id invalido" });
+  }
+  if (!requireSucursalForNonAdmin(req, res)) return;
+
+  let userSucursalId = null;
+  try {
+    const [usuarios] = await dbPromise.query(
+      "SELECT id, sucursal_id FROM usuarios WHERE id = ?",
+      [usuarioId]
+    );
+    if (!usuarios.length) {
+      return res.status(404).json({ message: "Usuario no encontrado" });
+    }
+    userSucursalId = Number(usuarios[0].sucursal_id);
+    const tokenSucursalId = getTokenSucursalId(req);
+    if (!isAdmin(req) && tokenSucursalId !== userSucursalId) {
+      return res.status(403).json({ message: "Acceso denegado" });
+    }
+  } catch (err) {
+    return res.status(500).json(err);
+  }
 
   const sql = `
     SELECT *
     FROM inscripciones
-    WHERE usuario_id = ?
+    WHERE usuario_id = ? AND sucursal_id = ?
     ORDER BY fecha_fin DESC
     LIMIT 1
   `;
 
-  db.query(sql, [usuario_id], (err, result) => {
+  db.query(sql, [usuarioId, userSucursalId], (err, result) => {
     if (err) return res.status(500).json(err);
     if (result.length === 0)
       return res.status(404).json({ message: "Sin membresia" });
@@ -1016,6 +1339,14 @@ app.get(
       dia: diaRaw,
       usuario_id: usuarioIdRaw,
     } = req.query;
+    if (!requireSucursalForNonAdmin(req, res)) return;
+    const sucursalId = resolveSucursalIdForRead(req, { allowQuery: true });
+    const sucursalFilter = buildSucursalFilter(sucursalId);
+    const sucursalFilterUsuarios = buildSucursalFilter(sucursalId, "u");
+    const sucursalFilterInscripciones = buildSucursalFilter(sucursalId, "i");
+    const sucursalFilterAsistencia = buildSucursalFilter(sucursalId, "a");
+    const subquerySucursalWhere = sucursalId ? "WHERE sucursal_id = ?" : "";
+    const subquerySucursalParams = sucursalId ? [sucursalId] : [];
     const rango = resolveDashboardRange(inicioRaw, finRaw);
 
     if (!rango.ok) {
@@ -1077,72 +1408,72 @@ app.get(
           `
             SELECT COUNT(*) AS total
             FROM asistencia
-            WHERE DATE(fecha_asistencia) BETWEEN ? AND ?
+            WHERE DATE(fecha_asistencia) BETWEEN ? AND ?${sucursalFilter.clause}
           `,
-          [inicio, fin]
+          [inicio, fin, ...sucursalFilter.params]
         ),
         safeQuery(
           "registros_periodo",
           `
             SELECT COUNT(*) AS total
             FROM usuarios
-            WHERE DATE(fecha_registro) BETWEEN ? AND ?
+            WHERE DATE(fecha_registro) BETWEEN ? AND ?${sucursalFilter.clause}
           `,
-          [inicio, fin]
+          [inicio, fin, ...sucursalFilter.params]
         ),
         safeQuery(
           "inscripciones_periodo",
           `
             SELECT COUNT(*) AS total
             FROM inscripciones
-            WHERE DATE(fecha_inicio) BETWEEN ? AND ?
+            WHERE DATE(fecha_inicio) BETWEEN ? AND ?${sucursalFilter.clause}
           `,
-          [inicio, fin]
+          [inicio, fin, ...sucursalFilter.params]
         ),
         safeQuery(
           "vencimientos_periodo",
           `
             SELECT COUNT(*) AS total
             FROM inscripciones
-            WHERE DATE(fecha_fin) BETWEEN ? AND ?
+            WHERE DATE(fecha_fin) BETWEEN ? AND ?${sucursalFilter.clause}
           `,
-          [inicio, fin]
+          [inicio, fin, ...sucursalFilter.params]
         ),
         safeQuery(
           "total_asistencias_dia",
           `
             SELECT COUNT(*) AS total
             FROM asistencia
-            WHERE DATE(fecha_asistencia) = ?
+            WHERE DATE(fecha_asistencia) = ?${sucursalFilter.clause}
           `,
-          [dia]
+          [dia, ...sucursalFilter.params]
         ),
         safeQuery(
           "total_registros_dia",
           `
             SELECT COUNT(*) AS total
             FROM usuarios
-            WHERE DATE(fecha_registro) = ?
+            WHERE DATE(fecha_registro) = ?${sucursalFilter.clause}
           `,
-          [dia]
+          [dia, ...sucursalFilter.params]
         ),
         safeQuery(
           "total_inscripciones_dia",
           `
             SELECT COUNT(*) AS total
             FROM inscripciones
-            WHERE DATE(fecha_inicio) = ?
+            WHERE DATE(fecha_inicio) = ?${sucursalFilter.clause}
           `,
-          [dia]
+          [dia, ...sucursalFilter.params]
         ),
         safeQuery(
           "total_vencimientos_dia",
           `
             SELECT COUNT(*) AS total
             FROM inscripciones
-            WHERE DATE(fecha_fin) = ?
+            WHERE DATE(fecha_fin) = ?${sucursalFilter.clause}
           `,
-          [dia]
+          [dia, ...sucursalFilter.params]
         ),
         safeQuery(
           "detalle_asistencias_dia",
@@ -1155,10 +1486,10 @@ app.get(
               DATE_FORMAT(a.fecha_asistencia, '%h:%i:%s %p') AS hora_am_pm
             FROM asistencia a
             INNER JOIN usuarios u ON u.id = a.usuario_id
-            WHERE DATE(a.fecha_asistencia) = ?
+            WHERE DATE(a.fecha_asistencia) = ?${sucursalFilterAsistencia.clause}
             ORDER BY a.fecha_asistencia DESC
           `,
-          [dia]
+          [dia, ...sucursalFilterAsistencia.params]
         ),
         safeQuery(
           "detalle_registros_dia",
@@ -1170,10 +1501,10 @@ app.get(
               DATE_FORMAT(u.fecha_registro, '%Y-%m-%d') AS fecha_registro,
               DATE_FORMAT(u.fecha_registro, '%h:%i:%s %p') AS hora_registro_am_pm
             FROM usuarios u
-            WHERE DATE(u.fecha_registro) = ?
+            WHERE DATE(u.fecha_registro) = ?${sucursalFilterUsuarios.clause}
             ORDER BY u.fecha_registro DESC
           `,
-          [dia]
+          [dia, ...sucursalFilterUsuarios.params]
         ),
         safeQuery(
           "detalle_inscripciones_dia",
@@ -1194,10 +1525,10 @@ app.get(
               DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin
             FROM inscripciones i
             INNER JOIN usuarios u ON u.id = i.usuario_id
-            WHERE DATE(i.fecha_inicio) = ?
+            WHERE DATE(i.fecha_inicio) = ?${sucursalFilterInscripciones.clause}
             ORDER BY i.fecha_inicio DESC, i.id DESC
           `,
-          [dia]
+          [dia, ...sucursalFilterInscripciones.params]
         ),
         safeQuery(
           "detalle_vencimientos_dia",
@@ -1218,10 +1549,10 @@ app.get(
               DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin
             FROM inscripciones i
             INNER JOIN usuarios u ON u.id = i.usuario_id
-            WHERE DATE(i.fecha_fin) = ?
+            WHERE DATE(i.fecha_fin) = ?${sucursalFilterInscripciones.clause}
             ORDER BY i.fecha_fin ASC, i.id ASC
           `,
-          [dia]
+          [dia, ...sucursalFilterInscripciones.params]
         ),
         safeQuery(
           "detalle_vencimientos_proximos_7_dias",
@@ -1247,12 +1578,14 @@ app.get(
             INNER JOIN (
               SELECT usuario_id, MAX(fecha_fin) AS ultima_fecha_fin
               FROM inscripciones
+              ${subquerySucursalWhere}
               GROUP BY usuario_id
             ) ult ON ult.usuario_id = i.usuario_id AND ult.ultima_fecha_fin = i.fecha_fin
-            WHERE DATE(i.fecha_fin) BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+            WHERE DATE(i.fecha_fin) BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)${sucursalFilterInscripciones.clause}
             ORDER BY i.fecha_fin ASC, u.id ASC
             LIMIT 300
-          `
+          `,
+          [...subquerySucursalParams, ...sucursalFilterInscripciones.params]
         ),
         safeQuery(
           "serie_inscripciones",
@@ -1263,12 +1596,12 @@ app.get(
             FROM (
               SELECT DATE(fecha_inicio) AS fecha_base, COUNT(*) AS total
               FROM inscripciones
-              WHERE DATE(fecha_inicio) BETWEEN ? AND ?
+              WHERE DATE(fecha_inicio) BETWEEN ? AND ?${sucursalFilter.clause}
               GROUP BY DATE(fecha_inicio)
             ) t
             ORDER BY fecha_base ASC
           `,
-          [inicio, fin]
+          [inicio, fin, ...sucursalFilter.params]
         ),
         safeQuery(
           "serie_vencimientos",
@@ -1279,12 +1612,12 @@ app.get(
             FROM (
               SELECT DATE(fecha_fin) AS fecha_base, COUNT(*) AS total
               FROM inscripciones
-              WHERE DATE(fecha_fin) BETWEEN ? AND ?
+              WHERE DATE(fecha_fin) BETWEEN ? AND ?${sucursalFilter.clause}
               GROUP BY DATE(fecha_fin)
             ) t
             ORDER BY fecha_base ASC
           `,
-          [inicio, fin]
+          [inicio, fin, ...sucursalFilter.params]
         ),
         safeQuery(
           "total_usuarios_activos",
@@ -1294,11 +1627,13 @@ app.get(
             LEFT JOIN (
               SELECT usuario_id, MAX(fecha_fin) AS fecha_fin
               FROM inscripciones
+              ${subquerySucursalWhere}
               GROUP BY usuario_id
             ) ult ON ult.usuario_id = u.id
             WHERE ult.fecha_fin IS NOT NULL
-              AND DATE(ult.fecha_fin) >= CURDATE()
-          `
+              AND DATE(ult.fecha_fin) >= CURDATE()${sucursalFilterUsuarios.clause}
+          `,
+          [...subquerySucursalParams, ...sucursalFilterUsuarios.params]
         ),
         safeQuery(
           "total_usuarios_inactivos",
@@ -1308,11 +1643,13 @@ app.get(
             LEFT JOIN (
               SELECT usuario_id, MAX(fecha_fin) AS fecha_fin
               FROM inscripciones
+              ${subquerySucursalWhere}
               GROUP BY usuario_id
             ) ult ON ult.usuario_id = u.id
-            WHERE ult.fecha_fin IS NULL
-              OR DATE(ult.fecha_fin) < CURDATE()
-          `
+            WHERE (ult.fecha_fin IS NULL
+              OR DATE(ult.fecha_fin) < CURDATE())${sucursalFilterUsuarios.clause}
+          `,
+          [...subquerySucursalParams, ...sucursalFilterUsuarios.params]
         ),
       ]);
 
@@ -1332,10 +1669,10 @@ app.get(
             `
               SELECT id, nombre, apellido
               FROM usuarios
-              WHERE id = ?
+              WHERE id = ?${sucursalFilterUsuarios.clause}
               LIMIT 1
             `,
-            [usuarioIdParam]
+            [usuarioIdParam, ...sucursalFilterUsuarios.params]
           ),
           safeQuery(
             "asistencia_usuario_busqueda",
@@ -1344,11 +1681,11 @@ app.get(
                 DATE_FORMAT(a.fecha_asistencia, '%Y-%m-%d') AS fecha,
                 DATE_FORMAT(a.fecha_asistencia, '%h:%i:%s %p') AS hora_am_pm
               FROM asistencia a
-              WHERE a.usuario_id = ?
+              WHERE a.usuario_id = ?${sucursalFilterAsistencia.clause}
               ORDER BY a.fecha_asistencia DESC
               LIMIT 500
             `,
-            [usuarioIdParam]
+            [usuarioIdParam, ...sucursalFilterAsistencia.params]
           ),
           safeQuery(
             "inscripciones_usuario_busqueda",
@@ -1365,11 +1702,11 @@ app.get(
                 DATE_FORMAT(i.fecha_inicio, '%Y-%m-%d') AS fecha_inicio,
                 DATE_FORMAT(i.fecha_fin, '%Y-%m-%d') AS fecha_fin
               FROM inscripciones i
-              WHERE i.usuario_id = ?
+              WHERE i.usuario_id = ?${sucursalFilterInscripciones.clause}
               ORDER BY i.fecha_inicio DESC, i.id DESC
               LIMIT 500
             `,
-            [usuarioIdParam]
+            [usuarioIdParam, ...sucursalFilterInscripciones.params]
           ),
         ]);
 
@@ -1434,6 +1771,8 @@ app.get(
   requireRole(["admin", "recepcionista"]),
   (req, res) => {
   const { id, nombre, fecha_inicio, fecha_fin } = req.query;
+  if (!requireSucursalForNonAdmin(req, res)) return;
+  const sucursalId = resolveSucursalIdForRead(req, { allowQuery: true });
 
   let sql = `
     SELECT DISTINCT u.*
@@ -1443,6 +1782,11 @@ app.get(
   `;
 
   const params = [];
+  const { clause: userFilter, params: userParams } = buildSucursalFilter(sucursalId, "u");
+  if (userFilter) {
+    sql += userFilter;
+    params.push(...userParams);
+  }
 
   if (id) {
     sql += " AND u.id = ?";
@@ -1479,7 +1823,9 @@ app.get(
   verifyToken,
   requireRole(["admin", "recepcionista"]),
   (req, res) => {
-  const sql = `
+  if (!requireSucursalForNonAdmin(req, res)) return;
+  const sucursalId = resolveSucursalIdForRead(req, { allowQuery: true });
+  let sql = `
     SELECT 
       u.id,
       u.nombre,
@@ -1499,8 +1845,14 @@ app.get(
       GROUP BY usuario_id
     ) i ON u.id = i.usuario_id
   `;
+  const params = [];
+  const { clause: userFilter, params: userParams } = buildSucursalFilter(sucursalId, "u");
+  if (userFilter) {
+    sql += ` WHERE 1=1${userFilter}`;
+    params.push(...userParams);
+  }
 
-  db.query(sql, (err, results) => {
+  db.query(sql, params, (err, results) => {
     if (err) return res.status(500).json(err);
     res.json(results);
   });
@@ -1517,9 +1869,18 @@ app.get(
   verifyToken,
   requireRole(["admin", "recepcionista"]),
   (req, res) => {
-  const sql = "SELECT * FROM usuarios";
+  if (!requireSucursalForNonAdmin(req, res)) return;
+  const sucursalId = resolveSucursalIdForRead(req, { allowQuery: true });
 
-  db.query(sql, (err, results) => {
+  let sql = "SELECT * FROM usuarios";
+  const params = [];
+  const { clause: userFilter, params: userParams } = buildSucursalFilter(sucursalId);
+  if (userFilter) {
+    sql += ` WHERE 1=1${userFilter}`;
+    params.push(...userParams);
+  }
+
+  db.query(sql, params, (err, results) => {
     if (err) {
       return res.status(500).json({ error: "Error en el servidor" });
     }
@@ -1535,6 +1896,8 @@ app.get(
   (req, res) => {
 
     const { id } = req.params;
+    if (!requireSucursalForNonAdmin(req, res)) return;
+    const sucursalId = resolveSucursalIdForRead(req, { allowQuery: true });
 
     const sql = `
       SELECT 
@@ -1553,9 +1916,9 @@ app.get(
         FROM inscripciones
         GROUP BY usuario_id
       ) i ON u.id = i.usuario_id
-      WHERE u.id = ?
+      WHERE u.id = ?${sucursalId ? " AND u.sucursal_id = ?" : ""}
     `;
-    db.query(sql, [id], (err, results) => {
+    db.query(sql, [id, ...(sucursalId ? [sucursalId] : [])], (err, results) => {
       if (err) return res.status(500).json(err);
       if (results.length === 0) {
         return res.status(404).json({ message: "Usuario no encontrado" });
