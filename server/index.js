@@ -1397,16 +1397,34 @@ app.post(
       });
     }
 
+    const sqlAsistenciaExistente = `
+      SELECT id
+      FROM asistencia
+      WHERE usuario_id = ? AND sucursal_id = ?
+        AND fecha_asistencia >= DATE_SUB(CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '-07:00'), INTERVAL 2 SECOND)
+      LIMIT 1
+    `;
+
+    db.query(sqlAsistenciaExistente, [usuarioId, userSucursalId], (errExist, rowsExist) => {
+      if (errExist) return res.status(500).json(errExist);
+
+      if (rowsExist.length > 0) {
+        return res.json({
+          message: "Asistencia ya registrada hace unos segundos"
+        });
+      }
+
     const sqlAsistencia = `
       INSERT INTO asistencia (usuario_id, fecha_asistencia, sucursal_id)
       VALUES (?, CONVERT_TZ(UTC_TIMESTAMP(), '+00:00', '-07:00'), ?)
     `;
 
-    db.query(sqlAsistencia, [usuarioId, userSucursalId], (err2) => {
-      if (err2) return res.status(500).json(err2);
+      db.query(sqlAsistencia, [usuarioId, userSucursalId], (err2) => {
+        if (err2) return res.status(500).json(err2);
 
-      res.json({
-        message: "Asistencia registrada correctamente"
+        res.json({
+          message: "Asistencia registrada correctamente"
+        });
       });
     });
   });
